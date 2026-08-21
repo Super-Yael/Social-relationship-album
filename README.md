@@ -37,3 +37,7 @@
 ```
 
 产物位于 `dist/个人相册.app` 和 `dist/个人相册-本机版.dmg`。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。

@@ -149,6 +149,69 @@ final class AlbumViewModel: ObservableObject {
         }
     }
 
+    func renameSelectedPersonFolder(to newName: String) {
+        guard let store, let libraryURL, let person = selectedPerson else { return }
+        let personID = person.id
+        let oldFolderURL = person.folderURL.standardizedFileURL
+
+        do {
+            // Refuse the filesystem mutation unless a consistent pre-rename snapshot exists.
+            try store.backupNow()
+            let newFolderURL = try LibraryFolderManager.renamePersonFolder(
+                at: oldFolderURL,
+                to: newName,
+                in: libraryURL
+            )
+            guard newFolderURL.path != oldFolderURL.path else {
+                statusMessage = "文件夹名称没有变化。"
+                refreshBackupCount()
+                return
+            }
+            mediaLoadGeneration = UUID()
+            isLoadingMedia = false
+
+            do {
+                let backupWarning = try store.renamePersonFolderRecord(
+                    id: personID,
+                    from: oldFolderURL,
+                    to: newFolderURL
+                )
+                searchText = ""
+                selectedPersonID = personID
+                reloadPeople()
+                statusMessage = backupWarning
+                    ?? "已重命名文件夹并同步 SQLite；文件夹内的内容未修改。"
+                refreshBackupCount()
+            } catch let databaseError {
+                var rollbackError: Error?
+                do {
+                    _ = try LibraryFolderManager.renamePersonFolder(
+                        at: newFolderURL,
+                        to: oldFolderURL.lastPathComponent,
+                        in: libraryURL
+                    )
+                } catch {
+                    rollbackError = error
+                }
+
+                if let rollbackError {
+                    throw AlbumError.database(
+                        "数据库同步失败，且文件夹名称无法自动恢复。数据库仍指向：\(oldFolderURL.path)\n" +
+                        "实际文件夹可能位于：\(newFolderURL.path)\n" +
+                        "数据库错误：\(databaseError.localizedDescription)\n" +
+                        "恢复错误：\(rollbackError.localizedDescription)"
+                    )
+                }
+                throw AlbumError.database(
+                    "数据库同步失败，文件夹已安全恢复为“\(oldFolderURL.lastPathComponent)”。\n" +
+                    databaseError.localizedDescription
+                )
+            }
+        } catch {
+            show(error)
+        }
+    }
+
     func scanForNewFolders() {
         guard let store, let libraryURL else { return }
         do {

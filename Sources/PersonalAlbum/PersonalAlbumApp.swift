@@ -8,9 +8,10 @@ struct PersonalAlbumApp: App {
         WindowGroup("个人相册") {
             ContentView()
                 .environmentObject(model)
-                .frame(minWidth: 1_120, minHeight: 720)
+                .frame(minWidth: AlbumLayout.minimumWindowWidth, minHeight: 720)
         }
         .defaultSize(width: 1_420, height: 900)
+        .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(after: .saveItem) {
                 Button("保存资料字段") {

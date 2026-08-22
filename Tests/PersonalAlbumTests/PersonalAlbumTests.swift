@@ -3,6 +3,16 @@ import XCTest
 @testable import PersonalAlbum
 
 final class PersonalAlbumTests: XCTestCase {
+    func testAlbumLayoutHasFixedSidebarsAndEnoughWindowWidth() {
+        XCTAssertEqual(AlbumLayout.sidebarWidth, 280)
+        XCTAssertEqual(AlbumLayout.editorWidth, 420)
+        XCTAssertEqual(AlbumLayout.mediaMinimumWidth, 500)
+        XCTAssertGreaterThanOrEqual(
+            AlbumLayout.minimumWindowWidth,
+            AlbumLayout.sidebarWidth + AlbumLayout.editorWidth + AlbumLayout.mediaMinimumWidth + 2
+        )
+    }
+
     func testBackupLimitIsFiftyMiB() {
         XCTAssertEqual(AppPaths.backupLimitBytes, 50 * 1024 * 1024)
     }

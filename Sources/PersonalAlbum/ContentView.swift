@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+enum AlbumLayout {
+    static let sidebarWidth: CGFloat = 280
+    static let editorWidth: CGFloat = 420
+    static let mediaMinimumWidth: CGFloat = 500
+    static let minimumWindowWidth: CGFloat = 1_240
+}
+
 struct ContentView: View {
     @EnvironmentObject private var model: AlbumViewModel
 
@@ -68,24 +75,33 @@ private struct AlbumMainView: View {
     @State private var newFolderName = ""
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             peopleSidebar
-                .navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 390)
-        } detail: {
-            if model.selectedPerson != nil {
-                HSplitView {
-                    MediaBrowserView()
-                        .frame(minWidth: 500)
-                    PersonEditorView(isShowingDeleteConfirmation: $isShowingDeleteConfirmation)
-                        .frame(minWidth: 370, idealWidth: 420, maxWidth: 520)
+                .frame(width: AlbumLayout.sidebarWidth)
+                .background(.bar)
+
+            Divider()
+
+            Group {
+                if model.selectedPerson != nil {
+                    HStack(spacing: 0) {
+                        MediaBrowserView()
+                            .frame(minWidth: AlbumLayout.mediaMinimumWidth, maxWidth: .infinity)
+
+                        Divider()
+
+                        PersonEditorView(isShowingDeleteConfirmation: $isShowingDeleteConfirmation)
+                            .frame(width: AlbumLayout.editorWidth)
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "没有人物记录",
+                        systemImage: "person.crop.rectangle.stack",
+                        description: Text("扫描 nickname 或添加一个已有文件夹。")
+                    )
                 }
-            } else {
-                ContentUnavailableView(
-                    "没有人物记录",
-                    systemImage: "person.crop.rectangle.stack",
-                    description: Text("扫描 nickname 或添加一个已有文件夹。")
-                )
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .toolbar {
             ToolbarItemGroup {
@@ -203,6 +219,7 @@ private struct AlbumMainView: View {
             }
             .padding(10)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func addExistingFolder() {
@@ -480,6 +497,13 @@ private struct PersonEditorView: View {
                             TextEditor(text: $model.draft.notes)
                                 .frame(minHeight: 82)
                                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.separator))
+                                .onKeyPress(.return) {
+                                    // Let TextEditor insert the newline, then persist the updated text.
+                                    DispatchQueue.main.async {
+                                        model.saveSelectedPerson(silently: true)
+                                    }
+                                    return .ignored
+                                }
                         }
                     }
                     .padding(.vertical, 4)
@@ -546,6 +570,9 @@ private struct PersonEditorView: View {
                         )
                     )
                     .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        model.saveSelectedPerson(silently: true)
+                    }
 
                     Button {
                         model.removeAccount(id: account.id)

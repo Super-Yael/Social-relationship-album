@@ -230,15 +230,17 @@ final class AlbumViewModel: ObservableObject {
         }
     }
 
-    func saveSelectedPerson() {
+    func saveSelectedPerson(silently: Bool = false) {
         guard let store, let id = selectedPersonID else { return }
         do {
             try store.updatePerson(id: id, draft: draft, accounts: draftAccounts)
             platforms = try store.listPlatforms()
-            reloadPeople()
-            selectedPersonID = id
-            loadSelectedPerson()
-            statusMessage = "字段已保存到 SQLite；文件夹内容未改变。"
+            if !silently {
+                reloadPeople()
+                selectedPersonID = id
+                loadSelectedPerson()
+                statusMessage = "字段已保存到 SQLite；文件夹内容未改变。"
+            }
             refreshBackupCount()
         } catch {
             show(error)

@@ -20,7 +20,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PersonalAlbumTests",
-            dependencies: ["PersonalAlbum"]
+            dependencies: ["PersonalAlbum", "CSQLite"]
         )
     ],
     swiftLanguageModes: [.v5]

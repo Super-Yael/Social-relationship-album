@@ -64,6 +64,7 @@ private struct AlbumMainView: View {
     @EnvironmentObject private var model: AlbumViewModel
     @State private var isShowingDeleteConfirmation = false
     @State private var isShowingCreateFolder = false
+    @State private var isShowingPlatformManagement = false
     @State private var newFolderName = ""
 
     var body: some View {
@@ -106,6 +107,13 @@ private struct AlbumMainView: View {
                 } label: {
                     Label("立即备份数据库", systemImage: "externaldrive.badge.timemachine")
                 }
+
+                Button {
+                    isShowingPlatformManagement = true
+                } label: {
+                    Label("平台管理", systemImage: "rectangle.3.group")
+                }
+                .help("新增、重命名或删除空平台")
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -136,6 +144,10 @@ private struct AlbumMainView: View {
             }
         } message: {
             Text("只会在 nickname 根目录创建一个空文件夹。")
+        }
+        .sheet(isPresented: $isShowingPlatformManagement) {
+            PlatformManagementView()
+                .environmentObject(model)
         }
     }
 
@@ -204,6 +216,141 @@ private struct AlbumMainView: View {
         panel.directoryURL = model.libraryURL
         if panel.runModal() == .OK, let url = panel.url {
             model.addFolder(url)
+        }
+    }
+}
+
+private struct PlatformManagementView: View {
+    @EnvironmentObject private var model: AlbumViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var isShowingAdd = false
+    @State private var newPlatformName = ""
+    @State private var renameTarget: PlatformRecord?
+    @State private var renamedPlatformName = ""
+    @State private var deleteTarget: PlatformRecord?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("平台管理")
+                        .font(.title2.bold())
+                    Text("共 \(model.platforms.count) 个平台；右侧数字为 SQLite 中的账号记录数。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("新增平台") {
+                    newPlatformName = ""
+                    isShowingAdd = true
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(16)
+
+            Divider()
+
+            List(model.platforms) { platform in
+                HStack(spacing: 12) {
+                    Image(systemName: "at")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
+                    Text(platform.name)
+                        .font(.body.weight(.medium))
+                    Spacer()
+                    Text("\(platform.accountCount) 条数据")
+                        .font(.caption)
+                        .foregroundStyle(platform.accountCount == 0 ? .secondary : .primary)
+                        .monospacedDigit()
+
+                    Button {
+                        renamedPlatformName = platform.name
+                        renameTarget = platform
+                    } label: {
+                        Image(systemName: "pencil")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("重命名“\(platform.name)”")
+
+                    Button(role: .destructive) {
+                        deleteTarget = platform
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(platform.accountCount > 0)
+                    .help(
+                        platform.accountCount == 0
+                            ? "删除空平台“\(platform.name)”"
+                            : "仍有账号数据，不能删除"
+                    )
+                }
+                .padding(.vertical, 4)
+            }
+
+            Divider()
+
+            HStack {
+                Label("只有 0 条数据的平台才能删除。", systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("关闭") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+        }
+        .frame(minWidth: 560, minHeight: 430)
+        .alert("新增平台", isPresented: $isShowingAdd) {
+            TextField("平台名称", text: $newPlatformName)
+            Button("新增") {
+                let name = newPlatformName
+                newPlatformName = ""
+                model.addPlatform(named: name)
+            }
+            Button("取消", role: .cancel) { newPlatformName = "" }
+        } message: {
+            Text("新平台会出现在每个人的平台字段中。")
+        }
+        .alert(
+            "重命名平台",
+            isPresented: Binding(
+                get: { renameTarget != nil },
+                set: { if !$0 { renameTarget = nil } }
+            )
+        ) {
+            TextField("平台名称", text: $renamedPlatformName)
+            Button("保存") {
+                if let platform = renameTarget {
+                    model.renamePlatform(platform, to: renamedPlatformName)
+                }
+                renameTarget = nil
+                renamedPlatformName = ""
+            }
+            Button("取消", role: .cancel) {
+                renameTarget = nil
+                renamedPlatformName = ""
+            }
+        } message: {
+            Text("已有账号会自动跟随新的平台名称。")
+        }
+        .confirmationDialog(
+            "删除平台？",
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除空平台", role: .destructive) {
+                if let platform = deleteTarget {
+                    model.deletePlatform(platform)
+                }
+                deleteTarget = nil
+            }
+            Button("取消", role: .cancel) { deleteTarget = nil }
+        } message: {
+            Text("数据库将再次确认该平台没有任何账号数据。")
         }
     }
 }
@@ -317,9 +464,9 @@ private struct PersonEditorView: View {
 
                 GroupBox("平台字段") {
                     VStack(alignment: .leading, spacing: 12) {
-                        ForEach(SocialPlatform.allCases) { platform in
+                        ForEach(model.platforms) { platform in
                             platformFields(platform)
-                            if platform != SocialPlatform.allCases.last {
+                            if platform.id != model.platforms.last?.id {
                                 Divider()
                             }
                         }
@@ -382,15 +529,15 @@ private struct PersonEditorView: View {
         }
     }
 
-    private func platformFields(_ platform: SocialPlatform) -> some View {
+    private func platformFields(_ platform: PlatformRecord) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(platform.rawValue)
+            Text(platform.name)
                 .font(.caption.bold())
 
             ForEach(model.accounts(for: platform)) { account in
                 HStack(spacing: 6) {
                     TextField(
-                        platform.rawValue,
+                        platform.name,
                         text: Binding(
                             get: {
                                 model.draftAccounts.first(where: { $0.id == account.id })?.value ?? ""
@@ -407,7 +554,7 @@ private struct PersonEditorView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .help("删除这一条 \(platform.rawValue) 记录")
+                    .help("删除这一条 \(platform.name) 记录")
                 }
             }
 
@@ -420,7 +567,7 @@ private struct PersonEditorView: View {
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
-                .help("增加一条 \(platform.rawValue) 记录")
+                .help("增加一条 \(platform.name) 记录")
             }
         }
     }

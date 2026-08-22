@@ -115,6 +115,76 @@ final class PersonalAlbumTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryRoot.appendingPathComponent("越界").path))
     }
 
+    func testSafeFolderRenamePreservesMediaAndSocialAccounts() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumRenameTests-\(UUID().uuidString)", isDirectory: true)
+        let library = temporaryRoot.appendingPathComponent("nickname", isDirectory: true)
+        let originalFolder = library.appendingPathComponent("原昵称", isDirectory: true)
+        let mediaURL = originalFolder.appendingPathComponent("保留内容.jpg")
+        let originalData = Data([0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9])
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        try FileManager.default.createDirectory(at: originalFolder, withIntermediateDirectories: true)
+        try originalData.write(to: mediaURL)
+        let originalFileNumber = try FileManager.default.attributesOfItem(atPath: mediaURL.path)[.systemFileNumber] as? NSNumber
+        XCTAssertNotNil(originalFileNumber)
+
+        let store = try SQLiteStore(
+            databaseURL: temporaryRoot.appendingPathComponent("个人相册.sqlite"),
+            backupDirectoryURL: temporaryRoot.appendingPathComponent("备份", isDirectory: true),
+            backupLimitBytes: 512 * 1024
+        )
+        XCTAssertEqual(try store.importMissingFolders(LibraryScanner.scanPeople(in: library)), 1)
+        let person = try XCTUnwrap(store.listPeople().first)
+        try store.updatePerson(
+            id: person.id,
+            draft: PersonDraft(person: person),
+            accounts: [
+                SocialAccountRecord(
+                    id: -1,
+                    personID: person.id,
+                    platform: "微信",
+                    value: "wxid_example",
+                    sortOrder: 0
+                )
+            ]
+        )
+
+        let renamedFolder = try LibraryFolderManager.renamePersonFolder(
+            at: originalFolder,
+            to: "新昵称",
+            in: library
+        )
+        XCTAssertNil(
+            try store.renamePersonFolderRecord(
+                id: person.id,
+                from: originalFolder,
+                to: renamedFolder
+            )
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: originalFolder.path))
+        let renamedMediaURL = renamedFolder.appendingPathComponent(mediaURL.lastPathComponent)
+        XCTAssertEqual(try Data(contentsOf: renamedMediaURL), originalData)
+        let renamedFileNumber = try FileManager.default.attributesOfItem(atPath: renamedMediaURL.path)[.systemFileNumber] as? NSNumber
+        XCTAssertEqual(renamedFileNumber, originalFileNumber)
+
+        let renamedPerson = try XCTUnwrap(store.listPeople().first)
+        XCTAssertEqual(renamedPerson.nickname, "新昵称")
+        XCTAssertEqual(renamedPerson.folderPath, renamedFolder.path)
+        XCTAssertEqual(try store.socialAccounts(for: person.id).map(\.value), ["wxid_example"])
+
+        let collision = library.appendingPathComponent("已存在", isDirectory: true)
+        try FileManager.default.createDirectory(at: collision, withIntermediateDirectories: false)
+        XCTAssertThrowsError(
+            try LibraryFolderManager.renamePersonFolder(at: renamedFolder, to: "已存在", in: library)
+        )
+        XCTAssertThrowsError(
+            try LibraryFolderManager.renamePersonFolder(at: renamedFolder, to: "../越界", in: library)
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamedMediaURL.path))
+    }
+
     private func relativeContents(of root: URL) throws -> [String] {
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
             return []

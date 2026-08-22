@@ -33,7 +33,7 @@ private struct SetupView: View {
                 .foregroundStyle(.tint)
             Text("个人相册")
                 .font(.largeTitle.bold())
-            Text("请选择 nickname 文件夹。应用只读取其中的媒体，\n不会创建、移动、重命名或删除文件夹内容。")
+            Text("请选择 nickname 文件夹。除你主动使用新建或重命名外，\n应用不会改变目录结构，也不会删除或改写媒体文件。")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             Button("选择 nickname 文件夹…") {
@@ -283,6 +283,8 @@ private struct MediaBrowserView: View {
 private struct PersonEditorView: View {
     @EnvironmentObject private var model: AlbumViewModel
     @Binding var isShowingDeleteConfirmation: Bool
+    @State private var isShowingRenameFolder = false
+    @State private var renamedFolderName = ""
 
     var body: some View {
         ScrollView {
@@ -297,8 +299,17 @@ private struct PersonEditorView: View {
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
-                        Button("修正数据库中的路径…") { chooseReplacementFolder() }
-                            .help("只修改 SQLite 路径字段，不移动或改名文件夹")
+                        HStack {
+                            Button("重命名文件夹…") {
+                                renamedFolderName = model.draft.nickname
+                                isShowingRenameFolder = true
+                            }
+                            .disabled(model.selectedPerson?.folderExists != true)
+                            .help("重命名 nickname 中的文件夹，并同步 SQLite")
+
+                            Button("修正数据库中的路径…") { chooseReplacementFolder() }
+                                .help("只修改 SQLite 路径字段，不移动或改名文件夹")
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 4)
@@ -355,6 +366,19 @@ private struct PersonEditorView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("不会删除、移动或修改对应文件夹及其中的任何内容。")
+        }
+        .alert("重命名人物文件夹", isPresented: $isShowingRenameFolder) {
+            TextField("nickname", text: $renamedFolderName)
+            Button("重命名") {
+                let name = renamedFolderName
+                renamedFolderName = ""
+                model.renameSelectedPersonFolder(to: name)
+            }
+            Button("取消", role: .cancel) {
+                renamedFolderName = ""
+            }
+        } message: {
+            Text("将直接重命名 nickname 中的文件夹并同步 SQLite。不会修改文件夹内的文件。")
         }
     }
 

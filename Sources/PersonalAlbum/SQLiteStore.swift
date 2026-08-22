@@ -211,6 +211,43 @@ final class SQLiteStore {
         try createBackup()
     }
 
+    /// Returns a warning when the database change succeeded but its post-change backup failed.
+    func renamePersonFolderRecord(id: Int64, from oldFolderURL: URL, to newFolderURL: URL) throws -> String? {
+        let oldPath = oldFolderURL.standardizedFileURL.path
+        let newURL = newFolderURL.standardizedFileURL
+        let newPath = newURL.path
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: newPath, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw AlbumError.invalidFolder("重命名后的文件夹不存在，数据库未修改：\(newPath)")
+        }
+
+        try backupBeforeMutation()
+        try transaction {
+            try execute(
+                """
+                UPDATE people
+                SET nickname = ?, folder_path = ?, updated_at = ?
+                WHERE id = ? AND folder_path = ?;
+                """,
+                bindings: [
+                    .text(newURL.lastPathComponent), .text(newPath),
+                    .double(Date().timeIntervalSince1970), .integer(id), .text(oldPath)
+                ]
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw AlbumError.database("人物记录已发生变化，数据库未更新。")
+            }
+        }
+
+        do {
+            try createBackup()
+            return nil
+        } catch {
+            return "文件夹和数据库已经同步，但写入后的数据库备份失败：\(error.localizedDescription)"
+        }
+    }
+
     func deletePerson(id: Int64) throws {
         try backupBeforeMutation()
         try execute("DELETE FROM people WHERE id = ?;", bindings: [.integer(id)])

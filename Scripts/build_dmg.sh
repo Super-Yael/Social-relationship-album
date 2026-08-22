@@ -7,6 +7,7 @@ DIST_DIR="$PROJECT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/个人相册.app"
 DMG_PATH="$DIST_DIR/个人相册-本机版.dmg"
 INFO_PLIST="$PROJECT_DIR/Packaging/Info.plist"
+APP_ICON="$PROJECT_DIR/Packaging/AppIcon.icns"
 
 mkdir -p "$DIST_DIR"
 
@@ -16,6 +17,11 @@ EXECUTABLE="$BIN_DIR/PersonalAlbum"
 
 if [[ ! -x "$EXECUTABLE" ]]; then
     print -u2 "找不到 Release 可执行文件：$EXECUTABLE"
+    exit 1
+fi
+
+if [[ ! -f "$APP_ICON" ]]; then
+    print -u2 "找不到 App 图标：$APP_ICON"
     exit 1
 fi
 
@@ -29,6 +35,7 @@ rm -f "$DMG_PATH"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp "$EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/PersonalAlbum"
 cp "$INFO_PLIST" "$APP_BUNDLE/Contents/Info.plist"
+cp "$APP_ICON" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 chmod 755 "$APP_BUNDLE/Contents/MacOS/PersonalAlbum"
 plutil -lint "$APP_BUNDLE/Contents/Info.plist"
 

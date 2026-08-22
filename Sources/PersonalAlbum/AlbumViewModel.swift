@@ -8,6 +8,7 @@ final class AlbumViewModel: ObservableObject {
     @Published var selectedPersonID: Int64?
     @Published var draft = PersonDraft()
     @Published var draftAccounts: [SocialAccountRecord] = []
+    @Published var platforms: [PlatformRecord] = []
     @Published var mediaItems: [MediaItem] = []
     @Published var isLoadingMedia = false
     @Published var searchText = ""
@@ -56,11 +57,13 @@ final class AlbumViewModel: ObservableObject {
                 statusMessage = "首次读取了 \(count) 个 nickname 文件夹；没有修改任何媒体文件。"
             }
             try store.backupNow()
+            platforms = try store.listPlatforms()
             reloadPeople(selectFirstIfNeeded: true)
             refreshBackupCount()
         } catch {
             self.store = nil
             self.libraryURL = nil
+            self.platforms = []
             show(error)
         }
     }
@@ -110,6 +113,7 @@ final class AlbumViewModel: ObservableObject {
                 finderComment: FinderCommentReader.extendedAttributeComment(at: normalized) ?? ""
             )
             let newID = try store.addPerson(folder: folder)
+            platforms = try store.listPlatforms()
             searchText = ""
             reloadPeople()
             selectedPersonID = newID
@@ -217,6 +221,7 @@ final class AlbumViewModel: ObservableObject {
         do {
             let scanned = try LibraryScanner.scanPeople(in: libraryURL)
             let count = try store.importMissingFolders(scanned)
+            platforms = try store.listPlatforms()
             reloadPeople(selectFirstIfNeeded: true)
             statusMessage = count == 0 ? "没有发现新的一级文件夹。" : "新增了 \(count) 条数据库记录；媒体文件未改变。"
             refreshBackupCount()
@@ -229,6 +234,7 @@ final class AlbumViewModel: ObservableObject {
         guard let store, let id = selectedPersonID else { return }
         do {
             try store.updatePerson(id: id, draft: draft, accounts: draftAccounts)
+            platforms = try store.listPlatforms()
             reloadPeople()
             selectedPersonID = id
             loadSelectedPerson()
@@ -243,6 +249,7 @@ final class AlbumViewModel: ObservableObject {
         guard let store, let id = selectedPersonID else { return }
         do {
             try store.deletePerson(id: id)
+            platforms = try store.listPlatforms()
             selectedPersonID = nil
             reloadPeople(selectFirstIfNeeded: true)
             statusMessage = "数据库记录已删除；对应文件夹及其中内容完全未动。"
@@ -263,18 +270,72 @@ final class AlbumViewModel: ObservableObject {
         draft.nickname = normalized.lastPathComponent
     }
 
-    func accounts(for platform: SocialPlatform) -> [SocialAccountRecord] {
+    func accounts(for platform: PlatformRecord) -> [SocialAccountRecord] {
         draftAccounts
-            .filter { $0.platform == platform.rawValue }
+            .filter { $0.platform.caseInsensitiveCompare(platform.name) == .orderedSame }
             .sorted { $0.sortOrder < $1.sortOrder }
     }
 
-    func addAccount(for platform: SocialPlatform) {
+    func addAccount(for platform: PlatformRecord) {
         guard let id = selectedPersonID else { return }
         let nextOrder = accounts(for: platform).count
         draftAccounts.append(
-            .empty(personID: id, platform: platform.rawValue, sortOrder: nextOrder)
+            .empty(personID: id, platform: platform.name, sortOrder: nextOrder)
         )
+    }
+
+    func addPlatform(named name: String) {
+        guard let store else { return }
+        do {
+            _ = try store.addPlatform(named: name)
+            platforms = try store.listPlatforms()
+            statusMessage = "已新增平台“\(name.trimmingCharacters(in: .whitespacesAndNewlines))”。"
+            refreshBackupCount()
+        } catch {
+            show(error)
+        }
+    }
+
+    func renamePlatform(_ platform: PlatformRecord, to name: String) {
+        guard let store else { return }
+        do {
+            let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            try store.renamePlatform(id: platform.id, to: normalized)
+            for index in draftAccounts.indices
+            where draftAccounts[index].platform.caseInsensitiveCompare(platform.name) == .orderedSame {
+                draftAccounts[index].platform = normalized
+            }
+            platforms = try store.listPlatforms()
+            statusMessage = "已将平台“\(platform.name)”重命名为“\(normalized)”，关联账号已同步。"
+            refreshBackupCount()
+        } catch {
+            show(error)
+        }
+    }
+
+    func deletePlatform(_ platform: PlatformRecord) {
+        guard let store else { return }
+        let hasDraftData = draftAccounts.contains {
+            $0.platform.caseInsensitiveCompare(platform.name) == .orderedSame
+                && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !hasDraftData || platform.accountCount > 0 else {
+            show(AlbumError.database(
+                "平台“\(platform.name)”当前有尚未保存的账号数据，请先清空或保存。"
+            ))
+            return
+        }
+        do {
+            try store.deletePlatform(id: platform.id)
+            draftAccounts.removeAll {
+                $0.platform.caseInsensitiveCompare(platform.name) == .orderedSame
+            }
+            platforms = try store.listPlatforms()
+            statusMessage = "已删除空平台“\(platform.name)”。"
+            refreshBackupCount()
+        } catch {
+            show(error)
+        }
     }
 
     func updateAccount(id: Int64, value: String) {

@@ -1,3 +1,4 @@
+import CSQLite
 import XCTest
 @testable import PersonalAlbum
 
@@ -36,13 +37,14 @@ final class PersonalAlbumTests: XCTestCase {
             SocialAccountRecord(id: -2, personID: person.id, platform: "QQ", value: "1234567890", sortOrder: 0),
             SocialAccountRecord(id: -3, personID: person.id, platform: "X", value: "x_test", sortOrder: 0),
             SocialAccountRecord(id: -4, personID: person.id, platform: "TG", value: "tg_test", sortOrder: 0),
-            SocialAccountRecord(id: -5, personID: person.id, platform: "抖音", value: "douyin_test", sortOrder: 0)
+            SocialAccountRecord(id: -5, personID: person.id, platform: "抖音", value: "douyin_test", sortOrder: 0),
+            SocialAccountRecord(id: -6, personID: person.id, platform: "小蓝", value: "blued_test", sortOrder: 0)
         ]
         try store.updatePerson(id: person.id, draft: draft, accounts: accounts)
 
         XCTAssertEqual(try store.listPeople(search: "wxid_example").count, 1)
         let storedAccounts = try store.socialAccounts(for: person.id)
-        XCTAssertEqual(Set(storedAccounts.map(\.platform)), Set(["微信", "QQ", "X", "TG", "抖音"]))
+        XCTAssertEqual(Set(storedAccounts.map(\.platform)), Set(["微信", "QQ", "X", "TG", "抖音", "小蓝"]))
         XCTAssertEqual(storedAccounts.first(where: { $0.platform == "QQ" })?.value, "1234567890")
         XCTAssertEqual(try relativeContents(of: library), originalContents)
 
@@ -58,6 +60,123 @@ final class PersonalAlbumTests: XCTestCase {
         try store.deletePerson(id: person.id)
         XCTAssertEqual(try store.personCount(), 0)
         XCTAssertEqual(try relativeContents(of: library), originalContents)
+    }
+
+    func testPlatformManagementPreservesDataAndOnlyDeletesEmptyPlatforms() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumPlatformTests-\(UUID().uuidString)", isDirectory: true)
+        let library = temporaryRoot.appendingPathComponent("nickname", isDirectory: true)
+        let personFolder = library.appendingPathComponent("测试人物", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        try FileManager.default.createDirectory(at: personFolder, withIntermediateDirectories: true)
+
+        let store = try SQLiteStore(
+            databaseURL: temporaryRoot.appendingPathComponent("个人相册.sqlite"),
+            backupDirectoryURL: temporaryRoot.appendingPathComponent("备份", isDirectory: true),
+            backupLimitBytes: 512 * 1024
+        )
+
+        XCTAssertEqual(
+            try store.listPlatforms().map(\.name),
+            ["微信", "QQ", "X", "TG", "抖音", "小蓝"]
+        )
+
+        let customID = try store.addPlatform(named: "  微博  ")
+        var custom = try XCTUnwrap(store.listPlatforms().first(where: { $0.id == customID }))
+        XCTAssertEqual(custom.name, "微博")
+
+        try store.renamePlatform(id: customID, to: "Weibo")
+        custom = try XCTUnwrap(store.listPlatforms().first(where: { $0.id == customID }))
+        XCTAssertEqual(custom.name, "Weibo")
+
+        XCTAssertEqual(try store.importMissingFolders(LibraryScanner.scanPeople(in: library)), 1)
+        let person = try XCTUnwrap(store.listPeople().first)
+        try store.updatePerson(
+            id: person.id,
+            draft: PersonDraft(person: person),
+            accounts: [
+                SocialAccountRecord(
+                    id: -1,
+                    personID: person.id,
+                    platform: "Weibo",
+                    value: "weibo_example",
+                    sortOrder: 0
+                )
+            ]
+        )
+
+        custom = try XCTUnwrap(store.listPlatforms().first(where: { $0.id == customID }))
+        XCTAssertEqual(custom.accountCount, 1)
+        XCTAssertThrowsError(try store.deletePlatform(id: customID))
+        XCTAssertEqual(try store.socialAccounts(for: person.id).map(\.value), ["weibo_example"])
+
+        try store.renamePlatform(id: customID, to: "微博")
+        XCTAssertEqual(try store.socialAccounts(for: person.id).map(\.platform), ["微博"])
+
+        try store.updatePerson(id: person.id, draft: PersonDraft(person: person), accounts: [])
+        try store.deletePlatform(id: customID)
+        XCTAssertFalse(try store.listPlatforms().contains(where: { $0.id == customID }))
+    }
+
+    func testVersionFourDatabaseMigratesPlatformsWithoutLosingAccounts() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumMigrationTests-\(UUID().uuidString)", isDirectory: true)
+        let databaseURL = temporaryRoot.appendingPathComponent("个人相册.sqlite")
+        let backupURL = temporaryRoot.appendingPathComponent("备份", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        let legacySQL = """
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE people(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nickname TEXT NOT NULL,
+                folder_path TEXT NOT NULL UNIQUE,
+                notes TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE social_accounts(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+                platform TEXT NOT NULL,
+                value TEXT NOT NULL COLLATE NOCASE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(person_id, platform, value)
+            );
+            INSERT INTO people(nickname, folder_path, notes, created_at, updated_at)
+            VALUES('旧人物', '/tmp/legacy-person', '保留备注', 1, 1);
+            INSERT INTO social_accounts(person_id, platform, value, sort_order)
+            VALUES(1, '旧平台', 'legacy_account', 0);
+            PRAGMA user_version = 4;
+            """
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        XCTAssertEqual(sqlite3_exec(database, legacySQL, nil, nil, &errorMessage), SQLITE_OK)
+        if let errorMessage { sqlite3_free(errorMessage) }
+        sqlite3_close(database)
+        database = nil
+
+        let store = try SQLiteStore(
+            databaseURL: databaseURL,
+            backupDirectoryURL: backupURL,
+            backupLimitBytes: 512 * 1024
+        )
+        let person = try XCTUnwrap(store.listPeople().first)
+        XCTAssertEqual(person.nickname, "旧人物")
+        XCTAssertEqual(person.notes, "保留备注")
+        XCTAssertEqual(try store.socialAccounts(for: person.id).map(\.value), ["legacy_account"])
+
+        let names = try store.listPlatforms().map(\.name)
+        XCTAssertEqual(Array(names.prefix(6)), ["微信", "QQ", "X", "TG", "抖音", "小蓝"])
+        let migratedLegacyPlatform = try XCTUnwrap(
+            store.listPlatforms().first(where: { $0.name == "旧平台" })
+        )
+        XCTAssertEqual(migratedLegacyPlatform.accountCount, 1)
+        XCTAssertThrowsError(try store.deletePlatform(id: migratedLegacyPlatform.id))
+        XCTAssertFalse(try store.backupFiles().isEmpty)
     }
 
     func testLibraryScannerFindsOnlyVisibleFolders() throws {

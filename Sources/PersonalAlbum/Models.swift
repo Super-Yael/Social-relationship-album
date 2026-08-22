@@ -6,8 +6,16 @@ enum SocialPlatform: String, CaseIterable, Identifiable {
     case x = "X"
     case telegram = "TG"
     case douyin = "抖音"
+    case xiaolan = "小蓝"
 
     var id: String { rawValue }
+}
+
+struct PlatformRecord: Identifiable, Hashable {
+    let id: Int64
+    var name: String
+    var sortOrder: Int
+    var accountCount: Int
 }
 
 struct PersonRecord: Identifiable, Hashable {

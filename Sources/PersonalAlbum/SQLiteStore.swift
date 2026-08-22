@@ -28,7 +28,7 @@ final class SQLiteStore {
         try execute("PRAGMA journal_mode = WAL;")
         try execute("PRAGMA synchronous = FULL;")
         let versionBeforeMigration = try schemaVersion()
-        if versionBeforeMigration > 0 && versionBeforeMigration < 4 {
+        if versionBeforeMigration > 0 && versionBeforeMigration < 5 {
             try createBackup()
         }
         try migrateSchema(from: versionBeforeMigration)
@@ -53,6 +53,32 @@ final class SQLiteStore {
             throw currentError(prefix: "无法统计人物记录")
         }
         return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    func listPlatforms() throws -> [PlatformRecord] {
+        let statement = try prepare(
+            """
+            SELECT p.id, p.name, p.sort_order, COUNT(a.id)
+            FROM platforms p
+            LEFT JOIN social_accounts a ON a.platform = p.name
+            GROUP BY p.id, p.name, p.sort_order
+            ORDER BY p.sort_order, p.id;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var records: [PlatformRecord] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            records.append(
+                PlatformRecord(
+                    id: sqlite3_column_int64(statement, 0),
+                    name: columnText(statement, 1),
+                    sortOrder: Int(sqlite3_column_int(statement, 2)),
+                    accountCount: Int(sqlite3_column_int64(statement, 3))
+                )
+            )
+        }
+        return records
     }
 
     func listPeople(search: String = "") throws -> [PersonRecord] {
@@ -120,6 +146,78 @@ final class SQLiteStore {
     }
 
     @discardableResult
+    func addPlatform(named rawName: String) throws -> Int64 {
+        let name = try validatedPlatformName(rawName)
+        try backupBeforeMutation()
+        var newID: Int64 = 0
+        try transaction {
+            let nextOrder = try nextPlatformSortOrder()
+            do {
+                try execute(
+                    """
+                    INSERT INTO platforms(name, sort_order, created_at, updated_at)
+                    VALUES(?, ?, ?, ?);
+                    """,
+                    bindings: [
+                        .text(name), .integer(Int64(nextOrder)),
+                        .double(Date().timeIntervalSince1970),
+                        .double(Date().timeIntervalSince1970)
+                    ]
+                )
+            } catch {
+                if try platformExists(named: name) {
+                    throw AlbumError.database("平台“\(name)”已存在。")
+                }
+                throw error
+            }
+            newID = sqlite3_last_insert_rowid(database)
+        }
+        try createBackup()
+        return newID
+    }
+
+    func renamePlatform(id: Int64, to rawName: String) throws {
+        let name = try validatedPlatformName(rawName)
+        try backupBeforeMutation()
+        try transaction {
+            do {
+                try execute(
+                    "UPDATE platforms SET name = ?, updated_at = ? WHERE id = ?;",
+                    bindings: [
+                        .text(name), .double(Date().timeIntervalSince1970), .integer(id)
+                    ]
+                )
+            } catch {
+                if try platformExists(named: name) {
+                    throw AlbumError.database("平台“\(name)”已存在。")
+                }
+                throw error
+            }
+            guard sqlite3_changes(database) == 1 else {
+                throw AlbumError.database("要重命名的平台不存在。")
+            }
+        }
+        try createBackup()
+    }
+
+    func deletePlatform(id: Int64) throws {
+        try backupBeforeMutation()
+        try transaction {
+            let platform = try platformRecord(id: id)
+            guard platform.accountCount == 0 else {
+                throw AlbumError.database(
+                    "平台“\(platform.name)”仍有 \(platform.accountCount) 条账号数据，请先清空后再删除。"
+                )
+            }
+            try execute("DELETE FROM platforms WHERE id = ?;", bindings: [.integer(id)])
+            guard sqlite3_changes(database) == 1 else {
+                throw AlbumError.database("要删除的平台不存在。")
+            }
+        }
+        try createBackup()
+    }
+
+    @discardableResult
     func addPerson(folder: ScannedFolder) throws -> Int64 {
         try backupBeforeMutation()
         var newID: Int64 = 0
@@ -178,6 +276,24 @@ final class SQLiteStore {
             throw AlbumError.invalidFolder("文件夹不存在，无法保存路径：\(cleanPath)")
         }
 
+        let configuredPlatforms = try listPlatforms()
+        let validPlatforms = Set(configuredPlatforms.map(\.name))
+        let nonemptyAccounts = accounts.compactMap { account -> SocialAccountRecord? in
+            var normalized = account
+            normalized.value = account.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let canonicalName = configuredPlatforms.first(where: {
+                $0.name.caseInsensitiveCompare(account.platform) == .orderedSame
+            })?.name {
+                normalized.platform = canonicalName
+            }
+            return normalized.value.isEmpty ? nil : normalized
+        }
+        if let invalid = nonemptyAccounts.first(where: { !validPlatforms.contains($0.platform) }) {
+            throw AlbumError.database(
+                "平台“\(invalid.platform)”已不存在，为防止数据丢失，本次保存已取消。"
+            )
+        }
+
         try backupBeforeMutation()
         try transaction {
             let now = Date().timeIntervalSince1970
@@ -194,15 +310,12 @@ final class SQLiteStore {
             )
             try execute("DELETE FROM social_accounts WHERE person_id = ?;", bindings: [.integer(id)])
             var platformOrder: [String: Int] = [:]
-            for account in accounts {
-                let value = account.value.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard SocialPlatform.allCases.contains(where: { $0.rawValue == account.platform }),
-                      !value.isEmpty else { continue }
+            for account in nonemptyAccounts {
                 let order = platformOrder[account.platform, default: 0]
                 try insertSocialAccount(
                     personID: id,
                     platform: account.platform,
-                    value: value,
+                    value: account.value,
                     sortOrder: order
                 )
                 platformOrder[account.platform] = order + 1
@@ -296,10 +409,19 @@ final class SQLiteStore {
                 notes TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS platforms(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS social_accounts(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
-                platform TEXT NOT NULL,
+                platform TEXT NOT NULL COLLATE NOCASE
+                    REFERENCES platforms(name) ON UPDATE CASCADE ON DELETE RESTRICT,
                 value TEXT NOT NULL COLLATE NOCASE,
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(person_id, platform, value)
@@ -313,6 +435,7 @@ final class SQLiteStore {
             CREATE INDEX IF NOT EXISTS idx_social_value ON social_accounts(value);
             """
         )
+        try ensureDefaultPlatforms()
 
         if originalVersion > 0 && originalVersion < 3 {
             try transaction {
@@ -333,7 +456,86 @@ final class SQLiteStore {
                 }
             }
         }
-        try execute("PRAGMA user_version = 4;")
+        if originalVersion > 0 && originalVersion < 5 {
+            try transaction {
+                try migratePlatformCatalog()
+            }
+        }
+        try execute("PRAGMA user_version = 5;")
+    }
+
+    private func ensureDefaultPlatforms() throws {
+        let now = Date().timeIntervalSince1970
+        for (order, platform) in SocialPlatform.allCases.enumerated() {
+            try execute(
+                """
+                INSERT OR IGNORE INTO platforms(name, sort_order, created_at, updated_at)
+                VALUES(?, ?, ?, ?);
+                """,
+                bindings: [
+                    .text(platform.rawValue), .integer(Int64(order)),
+                    .double(now), .double(now)
+                ]
+            )
+        }
+    }
+
+    private func migratePlatformCatalog() throws {
+        let statement = try prepare(
+            "SELECT DISTINCT platform FROM social_accounts ORDER BY platform COLLATE NOCASE;"
+        )
+        var existingNames: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            existingNames.append(columnText(statement, 0))
+        }
+        sqlite3_finalize(statement)
+
+        var nextOrder = try nextPlatformSortOrder()
+        let now = Date().timeIntervalSince1970
+        for name in existingNames {
+            guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw AlbumError.database(
+                    "旧数据库中存在未命名平台，为防止丢失数据，已取消自动迁移。"
+                )
+            }
+            try execute(
+                """
+                INSERT OR IGNORE INTO platforms(name, sort_order, created_at, updated_at)
+                VALUES(?, ?, ?, ?);
+                """,
+                bindings: [
+                    .text(name), .integer(Int64(nextOrder)), .double(now), .double(now)
+                ]
+            )
+            if sqlite3_changes(database) == 1 { nextOrder += 1 }
+        }
+
+        try execute(
+            """
+            DROP INDEX IF EXISTS idx_social_person_platform;
+            DROP INDEX IF EXISTS idx_social_value;
+            ALTER TABLE social_accounts RENAME TO social_accounts_before_platforms;
+
+            CREATE TABLE social_accounts(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+                platform TEXT NOT NULL COLLATE NOCASE
+                    REFERENCES platforms(name) ON UPDATE CASCADE ON DELETE RESTRICT,
+                value TEXT NOT NULL COLLATE NOCASE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(person_id, platform, value)
+            );
+
+            INSERT INTO social_accounts(id, person_id, platform, value, sort_order)
+            SELECT id, person_id, platform, value, sort_order
+            FROM social_accounts_before_platforms;
+
+            DROP TABLE social_accounts_before_platforms;
+            CREATE INDEX idx_social_person_platform
+                ON social_accounts(person_id, platform, sort_order);
+            CREATE INDEX idx_social_value ON social_accounts(value);
+            """
+        )
     }
 
     private func migrateLegacySocialValues() throws {
@@ -438,6 +640,59 @@ final class SQLiteStore {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
         return Int(sqlite3_column_int(statement, 0))
+    }
+
+    private func nextPlatformSortOrder() throws -> Int {
+        let statement = try prepare("SELECT COALESCE(MAX(sort_order) + 1, 0) FROM platforms;")
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
+    private func platformExists(named name: String) throws -> Bool {
+        let statement = try prepare(
+            "SELECT 1 FROM platforms WHERE name = ? COLLATE NOCASE LIMIT 1;",
+            bindings: [.text(name)]
+        )
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
+
+    private func platformRecord(id: Int64) throws -> PlatformRecord {
+        let statement = try prepare(
+            """
+            SELECT p.id, p.name, p.sort_order, COUNT(a.id)
+            FROM platforms p
+            LEFT JOIN social_accounts a ON a.platform = p.name
+            WHERE p.id = ?
+            GROUP BY p.id, p.name, p.sort_order;
+            """,
+            bindings: [.integer(id)]
+        )
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw AlbumError.database("平台不存在。")
+        }
+        return PlatformRecord(
+            id: sqlite3_column_int64(statement, 0),
+            name: columnText(statement, 1),
+            sortOrder: Int(sqlite3_column_int(statement, 2)),
+            accountCount: Int(sqlite3_column_int64(statement, 3))
+        )
+    }
+
+    private func validatedPlatformName(_ rawName: String) throws -> String {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw AlbumError.database("平台名称不能为空。")
+        }
+        guard name.count <= 40 else {
+            throw AlbumError.database("平台名称最多 40 个字符。")
+        }
+        guard !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw AlbumError.database("平台名称不能包含换行或控制字符。")
+        }
+        return name
     }
 
     private func textValue(column: String, personID: Int64) throws -> String {

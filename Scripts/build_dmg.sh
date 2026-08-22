@@ -7,7 +7,8 @@ DIST_DIR="$PROJECT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/个人相册.app"
 DMG_PATH="$DIST_DIR/个人相册-本机版.dmg"
 INFO_PLIST="$PROJECT_DIR/Packaging/Info.plist"
-APP_ICON="$PROJECT_DIR/Packaging/AppIcon.icns"
+LEGACY_APP_ICON="$PROJECT_DIR/Packaging/AppIcon.icns"
+COMPOSED_APP_ICON="$PROJECT_DIR/Packaging/AppIcon.icon"
 
 mkdir -p "$DIST_DIR"
 
@@ -20,8 +21,13 @@ if [[ ! -x "$EXECUTABLE" ]]; then
     exit 1
 fi
 
-if [[ ! -f "$APP_ICON" ]]; then
-    print -u2 "找不到 App 图标：$APP_ICON"
+if [[ ! -f "$LEGACY_APP_ICON" ]]; then
+    print -u2 "找不到兼容图标：$LEGACY_APP_ICON"
+    exit 1
+fi
+
+if [[ ! -d "$COMPOSED_APP_ICON" ]]; then
+    print -u2 "找不到 Icon Composer 图标：$COMPOSED_APP_ICON"
     exit 1
 fi
 
@@ -35,7 +41,21 @@ rm -f "$DMG_PATH"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp "$EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/PersonalAlbum"
 cp "$INFO_PLIST" "$APP_BUNDLE/Contents/Info.plist"
-cp "$APP_ICON" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+
+# macOS 26 优先从 Assets.car 读取 Icon Composer 的 Liquid Glass 图标。
+# 保留传统 .icns 作为兼容回退，并在 actool 之后复制，避免被自动生成的回退图覆盖。
+xcrun actool "$COMPOSED_APP_ICON" \
+    --compile "$APP_BUNDLE/Contents/Resources" \
+    --app-icon AppIcon \
+    --enable-on-demand-resources NO \
+    --development-region zh_CN \
+    --target-device mac \
+    --platform macosx \
+    --enable-icon-stack-fallback-generation=disabled \
+    --include-all-app-icons \
+    --minimum-deployment-target 26.0 \
+    --output-partial-info-plist /dev/null
+cp "$LEGACY_APP_ICON" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 chmod 755 "$APP_BUNDLE/Contents/MacOS/PersonalAlbum"
 plutil -lint "$APP_BUNDLE/Contents/Info.plist"
 

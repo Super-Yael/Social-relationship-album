@@ -26,6 +26,7 @@ final class AlbumViewModel: ObservableObject {
     @Published private(set) var peopleListOptions = PeopleListOptions()
     @Published var mediaItems: [MediaItem] = []
     @Published var isLoadingMedia = false
+    @Published private(set) var isMovingDroppedFiles = false
     @Published var searchText = ""
     @Published var errorMessage: String?
     @Published var statusMessage = ""
@@ -586,6 +587,60 @@ final class AlbumViewModel: ObservableObject {
     func revealSelectedFolder() {
         guard let person = selectedPerson, person.folderExists else { return }
         NSWorkspace.shared.activateFileViewerSelecting([person.folderURL])
+    }
+
+    @discardableResult
+    func moveDroppedFiles(_ sourceURLs: [URL]) -> Bool {
+        guard !sourceURLs.isEmpty else { return false }
+        guard !isMovingDroppedFiles else {
+            show(AlbumError.invalidFolder("上一批文件仍在移动，请稍后再试。"))
+            return false
+        }
+        guard let libraryURL, let person = selectedPerson, person.folderExists else {
+            show(AlbumError.invalidFolder("请先选择一个文件夹存在的人物。"))
+            return false
+        }
+
+        let personID = person.id
+        let personName = person.nickname
+        let destinationFolder = person.folderURL
+        let scopedURLs = sourceURLs.filter { $0.startAccessingSecurityScopedResource() }
+        isMovingDroppedFiles = true
+        statusMessage = "正在将 \(sourceURLs.count) 个文件移入“\(personName)”…"
+
+        Task {
+            defer {
+                for url in scopedURLs {
+                    url.stopAccessingSecurityScopedResource()
+                }
+                isMovingDroppedFiles = false
+            }
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try LibraryFolderManager.moveMediaFiles(
+                        at: sourceURLs,
+                        to: destinationFolder,
+                        in: libraryURL
+                    )
+                }.value
+
+                if selectedPersonID == personID, let currentPerson = selectedPerson {
+                    loadMedia(for: currentPerson)
+                }
+                let movedCount = result.destinations.count
+                if movedCount == 0 {
+                    statusMessage = "文件已在“\(personName)”文件夹中，无需移动。"
+                } else if result.skippedCount == 0 {
+                    statusMessage = "已将 \(movedCount) 个文件移入“\(personName)”。"
+                } else {
+                    statusMessage = "已将 \(movedCount) 个文件移入“\(personName)”；\(result.skippedCount) 个已在目标中。"
+                }
+            } catch {
+                show(error)
+                statusMessage = "文件移动未完成。"
+            }
+        }
+        return true
     }
 
     func clearError() {

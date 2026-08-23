@@ -64,7 +64,7 @@ private struct SetupView: View {
                 .foregroundStyle(.tint)
             Text("个人相册")
                 .font(.largeTitle.bold())
-            Text("请选择 nickname 文件夹。除你主动使用新建或重命名外，\n应用不会改变目录结构，也不会删除或改写媒体文件。")
+            Text("请选择 nickname 文件夹。只有你主动新建、重命名，\n或将文件拖入预览区时，应用才会改变媒体库。")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             Button("选择 nickname 文件夹…") {
@@ -549,6 +549,7 @@ private struct MediaBrowserView: View {
     @EnvironmentObject private var model: AlbumViewModel
     @State private var previewItem: MediaItem?
     @State private var selectedMediaID: MediaItem.ID?
+    @State private var isDropTargeted = false
     @FocusState private var isMediaGridFocused: Bool
     private let columns = [GridItem(.adaptive(minimum: 145, maximum: 220), spacing: 12)]
 
@@ -558,7 +559,7 @@ private struct MediaBrowserView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.selectedPerson?.nickname ?? "")
                         .font(.title2.bold())
-                    Text("只读预览 · \(model.mediaItems.count) 个媒体文件")
+                    Text("拖入可移动文件 · \(model.mediaItems.count) 个媒体文件")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -651,6 +652,32 @@ private struct MediaBrowserView: View {
         }
         .onChange(of: model.selectedPersonID) { _, _ in
             selectedMediaID = nil
+        }
+        .contentShape(Rectangle())
+        .dropDestination(for: URL.self) { urls, _ in
+            model.moveDroppedFiles(urls)
+        } isTargeted: { targeted in
+            isDropTargeted = targeted
+        }
+        .overlay {
+            if isDropTargeted {
+                ZStack {
+                    Color.accentColor.opacity(0.10)
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8, 5]))
+                        .padding(8)
+                    VStack(spacing: 10) {
+                        Image(systemName: "arrow.down.doc.fill")
+                            .font(.system(size: 34))
+                        Text("移入“\(model.selectedPerson?.nickname ?? "当前人物")”")
+                            .font(.headline)
+                        Text("原文件会被移动，不会复制")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(Color.accentColor)
+                }
+                .allowsHitTesting(false)
+            }
         }
         .sheet(item: $previewItem) { item in
             MediaPreviewSheet(item: item)

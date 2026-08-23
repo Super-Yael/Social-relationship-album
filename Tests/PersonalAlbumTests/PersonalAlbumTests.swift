@@ -572,6 +572,85 @@ final class PersonalAlbumTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: renamedMediaURL.path))
     }
 
+    func testDroppedFilesAreMovedIntoPersonFolderWithoutCopying() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumDroppedFileTests-\(UUID().uuidString)", isDirectory: true)
+        let library = temporaryRoot.appendingPathComponent("nickname", isDirectory: true)
+        let personFolder = library.appendingPathComponent("测试人物", isDirectory: true)
+        let sourceFolder = temporaryRoot.appendingPathComponent("待整理", isDirectory: true)
+        let firstSource = sourceFolder.appendingPathComponent("图片.jpg")
+        let secondSource = sourceFolder.appendingPathComponent("视频.mp4")
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        try FileManager.default.createDirectory(at: personFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: firstSource)
+        try Data([0x00, 0x00, 0x00, 0x18]).write(to: secondSource)
+        let firstFileNumber = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: firstSource.path)[.systemFileNumber] as? NSNumber
+        )
+        let secondFileNumber = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: secondSource.path)[.systemFileNumber] as? NSNumber
+        )
+
+        let result = try LibraryFolderManager.moveMediaFiles(
+            at: [firstSource, secondSource],
+            to: personFolder,
+            in: library
+        )
+
+        XCTAssertEqual(result.destinations.map(\.lastPathComponent), ["图片.jpg", "视频.mp4"])
+        XCTAssertEqual(result.skippedCount, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstSource.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secondSource.path))
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(
+                atPath: personFolder.appendingPathComponent("图片.jpg").path
+            )[.systemFileNumber] as? NSNumber,
+            firstFileNumber
+        )
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(
+                atPath: personFolder.appendingPathComponent("视频.mp4").path
+            )[.systemFileNumber] as? NSNumber,
+            secondFileNumber
+        )
+    }
+
+    func testDroppedFileCollisionRejectsWholeBatchWithoutOverwrite() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumDroppedCollisionTests-\(UUID().uuidString)", isDirectory: true)
+        let library = temporaryRoot.appendingPathComponent("nickname", isDirectory: true)
+        let personFolder = library.appendingPathComponent("测试人物", isDirectory: true)
+        let sourceFolder = temporaryRoot.appendingPathComponent("待整理", isDirectory: true)
+        let safeSource = sourceFolder.appendingPathComponent("可移动.jpg")
+        let collidingSource = sourceFolder.appendingPathComponent("已存在.jpg")
+        let existingDestination = personFolder.appendingPathComponent("已存在.jpg")
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        try FileManager.default.createDirectory(at: personFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try Data("safe".utf8).write(to: safeSource)
+        try Data("source".utf8).write(to: collidingSource)
+        try Data("destination".utf8).write(to: existingDestination)
+
+        XCTAssertThrowsError(
+            try LibraryFolderManager.moveMediaFiles(
+                at: [safeSource, collidingSource],
+                to: personFolder,
+                in: library
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: safeSource), Data("safe".utf8))
+        XCTAssertEqual(try Data(contentsOf: collidingSource), Data("source".utf8))
+        XCTAssertEqual(try Data(contentsOf: existingDestination), Data("destination".utf8))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: personFolder.appendingPathComponent("可移动.jpg").path
+            )
+        )
+    }
+
     private func relativeContents(of root: URL) throws -> [String] {
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
             return []

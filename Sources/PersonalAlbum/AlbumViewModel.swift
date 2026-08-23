@@ -3,27 +3,54 @@ import Foundation
 
 @MainActor
 final class AlbumViewModel: ObservableObject {
+    enum InterfaceAction: Equatable {
+        case createFolder
+        case addExistingFolder
+        case importDatabase
+        case managePlatforms
+    }
+
+    enum SaveState: Equatable {
+        case saved
+        case pending
+        case saving
+        case failed
+    }
+
     @Published var libraryURL: URL?
     @Published var people: [PersonRecord] = []
     @Published var selectedPersonID: Int64?
     @Published var draft = PersonDraft()
     @Published var draftAccounts: [SocialAccountRecord] = []
     @Published var platforms: [PlatformRecord] = []
+    @Published private(set) var peopleListOptions = PeopleListOptions()
     @Published var mediaItems: [MediaItem] = []
     @Published var isLoadingMedia = false
     @Published var searchText = ""
     @Published var errorMessage: String?
     @Published var statusMessage = ""
     @Published var backupCount = 0
+    @Published private(set) var saveState: SaveState = .saved
+    @Published var interfaceAction: InterfaceAction?
 
     private var store: SQLiteStore?
     private var mediaLoadGeneration = UUID()
     private let folderMonitor = LibraryFolderMonitor()
+    private let libraryAccess = LibraryAccessController()
+    private var autosaveTask: Task<Void, Never>?
 
     init() {
-        if let libraryURL = AppPaths.configuredLibraryURL {
-            configure(libraryURL: libraryURL)
+        do {
+            if let libraryURL = try libraryAccess.restoreLibrary() {
+                configure(libraryURL: libraryURL, persistAccess: false)
+            }
+        } catch {
+            show(error)
         }
+    }
+
+    deinit {
+        autosaveTask?.cancel()
     }
 
     var isConfigured: Bool { store != nil && libraryURL != nil }
@@ -33,8 +60,31 @@ final class AlbumViewModel: ObservableObject {
         return people.first { $0.id == selectedPersonID }
     }
 
+    func selectPerson(_ id: Int64?) {
+        guard id != selectedPersonID else { return }
+        if saveState == .pending || saveState == .failed {
+            saveSelectedPerson(silently: true)
+            guard saveState == .saved else { return }
+        }
+        selectedPersonID = id
+        loadSelectedPerson()
+    }
+
+    func requestInterfaceAction(_ action: InterfaceAction) {
+        interfaceAction = action
+    }
+
+    func consumeInterfaceAction() {
+        interfaceAction = nil
+    }
+
     func configure(libraryURL: URL) {
+        configure(libraryURL: libraryURL, persistAccess: true)
+    }
+
+    private func configure(libraryURL: URL, persistAccess: Bool) {
         folderMonitor.stop()
+        autosaveTask?.cancel()
         do {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: libraryURL.path, isDirectory: &isDirectory),
@@ -42,15 +92,24 @@ final class AlbumViewModel: ObservableObject {
                 throw AlbumError.invalidFolder("选择的位置不是有效文件夹。")
             }
 
-            let normalized = libraryURL.standardizedFileURL
+            let normalized = persistAccess
+                ? try libraryAccess.rememberAndAccessLibrary(libraryURL)
+                : libraryURL.standardizedFileURL
+            let dataDirectory = try AppPaths.prepareApplicationDataDirectory()
+            let databaseURL = try AppPaths.databaseURL()
+            let backupDirectoryURL = try AppPaths.backupDirectoryURL()
+            guard AppPaths.isInsideApplicationData(databaseURL),
+                  AppPaths.isInsideApplicationData(backupDirectoryURL) else {
+                throw AlbumError.database("数据库和备份必须位于 App 数据目录内：\(dataDirectory.path)")
+            }
             let store = try SQLiteStore(
-                databaseURL: AppPaths.databaseURL(for: normalized),
-                backupDirectoryURL: AppPaths.backupDirectoryURL(for: normalized),
-                backupLimitBytes: AppPaths.backupLimitBytes
+                databaseURL: databaseURL,
+                backupDirectoryURL: backupDirectoryURL,
+                backupLimitBytes: AppPaths.backupLimitBytes,
+                requiresApplicationDataLocation: true
             )
             self.store = store
             self.libraryURL = normalized
-            AppPaths.rememberLibrary(normalized)
             try store.saveLibraryRoot(normalized.path)
 
             let scanned = try LibraryScanner.scanPeople(in: normalized)
@@ -60,6 +119,14 @@ final class AlbumViewModel: ObservableObject {
                 : "启动扫描新增了 \(count) 条数据库记录；媒体文件未改变。"
             try store.backupNow()
             platforms = try store.listPlatforms()
+            var restoredOptions = try store.loadPeopleListOptions()
+            if let filteredPlatform = restoredOptions.platform {
+                restoredOptions.platform = platforms.first(where: {
+                    $0.name.caseInsensitiveCompare(filteredPlatform) == .orderedSame
+                })?.name
+            }
+            peopleListOptions = restoredOptions
+            try store.savePeopleListOptions(restoredOptions)
             reloadPeople(selectFirstIfNeeded: true)
             refreshBackupCount()
             do {
@@ -75,15 +142,27 @@ final class AlbumViewModel: ObservableObject {
             self.store = nil
             self.libraryURL = nil
             self.platforms = []
+            if persistAccess {
+                libraryAccess.stopAccessingLibrary()
+            }
             show(error)
         }
     }
 
     func reloadPeople(selectFirstIfNeeded: Bool = false) {
         guard let store else { return }
+        if saveState == .pending || saveState == .failed {
+            saveSelectedPerson(silently: true)
+            guard saveState == .saved else { return }
+        }
         do {
             let previousSelection = selectedPersonID
-            people = try store.listPeople(search: searchText)
+            people = try store.listPeople(
+                search: searchText,
+                platform: peopleListOptions.platform,
+                sortField: peopleListOptions.sortField,
+                sortDirection: peopleListOptions.sortDirection
+            )
             if let previousSelection, people.contains(where: { $0.id == previousSelection }) {
                 selectedPersonID = previousSelection
             } else if selectFirstIfNeeded || selectedPersonID != nil {
@@ -96,15 +175,18 @@ final class AlbumViewModel: ObservableObject {
     }
 
     func loadSelectedPerson() {
+        autosaveTask?.cancel()
         guard let person = selectedPerson else {
             draft = PersonDraft()
             draftAccounts = []
             mediaItems = []
+            saveState = .saved
             return
         }
         draft = PersonDraft(person: person)
         do {
             draftAccounts = try store?.socialAccounts(for: person.id) ?? []
+            saveState = .saved
             loadMedia(for: person)
         } catch {
             show(error)
@@ -231,6 +313,37 @@ final class AlbumViewModel: ObservableObject {
         scanForNewFolders(announceWhenEmpty: true)
     }
 
+    func setPlatformFilter(_ platform: String?) {
+        guard let store else { return }
+        flushAutosave()
+        guard saveState == .saved else { return }
+        let canonicalPlatform = platform.flatMap { requested in
+            platforms.first(where: {
+                $0.name.caseInsensitiveCompare(requested) == .orderedSame
+            })?.name
+        }
+        guard canonicalPlatform != peopleListOptions.platform else { return }
+        var options = peopleListOptions
+        options.platform = canonicalPlatform
+        do {
+            try store.savePeopleListOptions(options)
+            peopleListOptions = options
+            reloadPeople(selectFirstIfNeeded: true)
+            statusMessage = canonicalPlatform.map { "已筛选出 \($0) 平台有记录的人物。" }
+                ?? "已显示全部人物。"
+        } catch {
+            show(error)
+        }
+    }
+
+    func setPeopleSortField(_ field: PeopleSortField) {
+        updatePeopleListOptions { $0.sortField = field }
+    }
+
+    func setPeopleSortDirection(_ direction: PeopleSortDirection) {
+        updatePeopleListOptions { $0.sortDirection = direction }
+    }
+
     private func scanForNewFoldersAutomatically() {
         scanForNewFolders(announceWhenEmpty: false)
     }
@@ -257,10 +370,29 @@ final class AlbumViewModel: ObservableObject {
 
     func saveSelectedPerson(silently: Bool = false) {
         guard let store, let id = selectedPersonID else { return }
+        autosaveTask?.cancel()
+        saveState = .saving
         do {
+            let previousFolderPath = selectedPerson?.folderPath
             try store.updatePerson(id: id, draft: draft, accounts: draftAccounts)
             platforms = try store.listPlatforms()
-            if !silently {
+            saveState = .saved
+            if silently {
+                let needsQueryRefresh = peopleListOptions.platform != nil
+                    || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if needsQueryRefresh {
+                    reloadPeople(selectFirstIfNeeded: true)
+                } else if let index = people.firstIndex(where: { $0.id == id }) {
+                    people[index].nickname = URL(fileURLWithPath: draft.folderPath).lastPathComponent
+                    people[index].folderPath = draft.folderPath
+                    people[index].notes = draft.notes
+                    people[index].updatedAt = Date().timeIntervalSince1970
+                    if previousFolderPath != draft.folderPath {
+                        loadMedia(for: people[index])
+                    }
+                }
+                statusMessage = "更改已自动保存。"
+            } else {
                 reloadPeople()
                 selectedPersonID = id
                 loadSelectedPerson()
@@ -268,7 +400,20 @@ final class AlbumViewModel: ObservableObject {
             }
             refreshBackupCount()
         } catch {
+            saveState = .failed
             show(error)
+        }
+    }
+
+    func updateNotes(_ value: String) {
+        guard draft.notes != value else { return }
+        draft.notes = value
+        scheduleAutosave()
+    }
+
+    func flushAutosave() {
+        if saveState == .pending {
+            saveSelectedPerson(silently: true)
         }
     }
 
@@ -295,6 +440,7 @@ final class AlbumViewModel: ObservableObject {
         }
         draft.folderPath = normalized.path
         draft.nickname = normalized.lastPathComponent
+        scheduleAutosave()
     }
 
     func accounts(for platform: PlatformRecord) -> [SocialAccountRecord] {
@@ -333,6 +479,13 @@ final class AlbumViewModel: ObservableObject {
                 draftAccounts[index].platform = normalized
             }
             platforms = try store.listPlatforms()
+            if peopleListOptions.platform?.caseInsensitiveCompare(platform.name) == .orderedSame {
+                var options = peopleListOptions
+                options.platform = normalized
+                try store.savePeopleListOptions(options)
+                peopleListOptions = options
+                reloadPeople(selectFirstIfNeeded: true)
+            }
             statusMessage = "已将平台“\(platform.name)”重命名为“\(normalized)”，关联账号已同步。"
             refreshBackupCount()
         } catch {
@@ -358,6 +511,13 @@ final class AlbumViewModel: ObservableObject {
                 $0.platform.caseInsensitiveCompare(platform.name) == .orderedSame
             }
             platforms = try store.listPlatforms()
+            if peopleListOptions.platform?.caseInsensitiveCompare(platform.name) == .orderedSame {
+                var options = peopleListOptions
+                options.platform = nil
+                try store.savePeopleListOptions(options)
+                peopleListOptions = options
+                reloadPeople(selectFirstIfNeeded: true)
+            }
             statusMessage = "已删除空平台“\(platform.name)”。"
             refreshBackupCount()
         } catch {
@@ -368,10 +528,12 @@ final class AlbumViewModel: ObservableObject {
     func updateAccount(id: Int64, value: String) {
         guard let index = draftAccounts.firstIndex(where: { $0.id == id }) else { return }
         draftAccounts[index].value = value
+        scheduleAutosave()
     }
 
     func removeAccount(id: Int64) {
         draftAccounts.removeAll { $0.id == id }
+        scheduleAutosave()
     }
 
     func createManualBackup() {
@@ -381,6 +543,42 @@ final class AlbumViewModel: ObservableObject {
             refreshBackupCount()
             statusMessage = "已创建一致性数据库备份。"
         } catch {
+            show(error)
+        }
+    }
+
+    func importDatabaseSnapshot(_ sourceURL: URL) {
+        let currentLibraryURL = libraryURL
+        let didStartSourceAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartSourceAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        folderMonitor.stop()
+        autosaveTask?.cancel()
+
+        if saveState == .pending || saveState == .failed {
+            saveSelectedPerson(silently: true)
+            guard saveState == .saved else { return }
+        }
+
+        do {
+            try store?.backupNow()
+            store = nil
+            let destinationURL = try AppPaths.databaseURL()
+            try SQLiteStore.importSnapshot(from: sourceURL, to: destinationURL)
+
+            if let currentLibraryURL {
+                configure(libraryURL: currentLibraryURL, persistAccess: false)
+                statusMessage = "旧数据库已导入 App 数据目录，并已创建新的安全备份。"
+            } else {
+                statusMessage = "旧数据库已导入 App 数据目录。现在请选择 nickname 文件夹。"
+            }
+        } catch {
+            if let currentLibraryURL {
+                configure(libraryURL: currentLibraryURL, persistAccess: false)
+            }
             show(error)
         }
     }
@@ -425,6 +623,38 @@ final class AlbumViewModel: ObservableObject {
     private func refreshBackupCount() {
         guard let store else { return }
         backupCount = (try? store.backupFiles().count) ?? 0
+    }
+
+    private func scheduleAutosave() {
+        guard selectedPersonID != nil else { return }
+        autosaveTask?.cancel()
+        saveState = .pending
+        autosaveTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(700))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.saveSelectedPerson(silently: true)
+        }
+    }
+
+    private func updatePeopleListOptions(_ update: (inout PeopleListOptions) -> Void) {
+        guard let store else { return }
+        flushAutosave()
+        guard saveState == .saved else { return }
+        var options = peopleListOptions
+        update(&options)
+        guard options != peopleListOptions else { return }
+        do {
+            try store.savePeopleListOptions(options)
+            peopleListOptions = options
+            reloadPeople(selectFirstIfNeeded: true)
+            statusMessage = "人物排序已更新。"
+        } catch {
+            show(error)
+        }
     }
 
     private func show(_ error: Error) {

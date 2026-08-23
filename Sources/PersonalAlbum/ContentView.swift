@@ -1,36 +1,34 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+private enum AlbumPanels {
+    static func chooseDatabaseSnapshot() -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = "导入旧数据库备份"
+        panel.message = "选择一份一致性的 .sqlite 备份；App 只读取它，并将副本导入自己的数据目录。"
+        panel.prompt = "导入副本"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "sqlite") ?? .database]
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+}
 
 enum AlbumLayout {
-    static let sidebarWidthKey = "album.sidebar-width"
-    static let editorWidthKey = "album.editor-width"
     static let defaultSidebarWidth = 280.0
     static let defaultEditorWidth = 420.0
     static let sidebarWidthRange = 220.0...420.0
     static let editorWidthRange = 340.0...560.0
-    static let mediaMinimumWidth: CGFloat = 500
-    static let dividerHitWidth: CGFloat = 8
-    static let baseMinimumWindowWidth: CGFloat = 1_240
-
-    static func clampedSidebarWidth(_ width: Double) -> Double {
-        min(max(width, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)
-    }
-
-    static func clampedEditorWidth(_ width: Double) -> Double {
-        min(max(width, editorWidthRange.lowerBound), editorWidthRange.upperBound)
-    }
-
-    static func minimumWindowWidth(sidebarWidth: Double, editorWidth: Double) -> CGFloat {
-        let columns = clampedSidebarWidth(sidebarWidth)
-            + clampedEditorWidth(editorWidth)
-            + Double(mediaMinimumWidth)
-            + Double(dividerHitWidth * 2)
-        return max(baseMinimumWindowWidth, CGFloat(columns))
-    }
+    static let minimumWindowWidth: CGFloat = 760
+    static let minimumWindowHeight: CGFloat = 560
 }
 
 struct ContentView: View {
     @EnvironmentObject private var model: AlbumViewModel
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -47,6 +45,11 @@ struct ContentView: View {
             Button("好", role: .cancel) { model.clearError() }
         } message: {
             Text(model.errorMessage ?? "未知错误")
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active {
+                model.flushAutosave()
+            }
         }
     }
 }
@@ -69,6 +72,19 @@ private struct SetupView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+
+            Button("先导入旧数据库备份…") {
+                if let url = AlbumPanels.chooseDatabaseSnapshot() {
+                    model.importDatabaseSnapshot(url)
+                }
+            }
+            .help("数据库副本只会写入 App 数据目录")
+
+            if !model.statusMessage.isEmpty {
+                Text(model.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(minWidth: 720, minHeight: 480)
         .padding(40)
@@ -90,53 +106,40 @@ private struct SetupView: View {
 
 private struct AlbumMainView: View {
     @EnvironmentObject private var model: AlbumViewModel
-    @AppStorage(AlbumLayout.sidebarWidthKey)
-    private var sidebarWidth = AlbumLayout.defaultSidebarWidth
-    @AppStorage(AlbumLayout.editorWidthKey)
-    private var editorWidth = AlbumLayout.defaultEditorWidth
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var isInspectorPresented = true
     @State private var isShowingDeleteConfirmation = false
     @State private var isShowingCreateFolder = false
     @State private var isShowingPlatformManagement = false
     @State private var newFolderName = ""
 
     var body: some View {
-        HStack(spacing: 0) {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             peopleSidebar
-                .frame(width: CGFloat(AlbumLayout.clampedSidebarWidth(sidebarWidth)))
-                .background(.bar)
-
-            ResizableColumnDivider(
-                width: $sidebarWidth,
-                allowedRange: AlbumLayout.sidebarWidthRange,
-                dragDirection: 1,
-                accessibilityName: "调整人物侧边栏宽度"
-            )
-
-            Group {
-                if model.selectedPerson != nil {
-                    HStack(spacing: 0) {
-                        MediaBrowserView()
-                            .frame(minWidth: AlbumLayout.mediaMinimumWidth, maxWidth: .infinity)
-
-                        ResizableColumnDivider(
-                            width: $editorWidth,
-                            allowedRange: AlbumLayout.editorWidthRange,
-                            dragDirection: -1,
-                            accessibilityName: "调整资料栏宽度"
-                        )
-
-                        PersonEditorView(isShowingDeleteConfirmation: $isShowingDeleteConfirmation)
-                            .frame(width: CGFloat(AlbumLayout.clampedEditorWidth(editorWidth)))
-                    }
-                } else {
-                    ContentUnavailableView(
-                        "没有人物记录",
-                        systemImage: "person.crop.rectangle.stack",
-                        description: Text("扫描 nickname 或添加一个已有文件夹。")
-                    )
-                }
+                .navigationSplitViewColumnWidth(
+                    min: AlbumLayout.sidebarWidthRange.lowerBound,
+                    ideal: AlbumLayout.defaultSidebarWidth,
+                    max: AlbumLayout.sidebarWidthRange.upperBound
+                )
+        } detail: {
+            if model.selectedPerson != nil {
+                MediaBrowserView()
+            } else {
+                ContentUnavailableView(
+                    "没有人物记录",
+                    systemImage: "person.crop.rectangle.stack",
+                    description: Text("扫描 nickname 或添加一个已有文件夹。")
+                )
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .inspector(isPresented: $isInspectorPresented) {
+            PersonEditorView(isShowingDeleteConfirmation: $isShowingDeleteConfirmation)
+                .inspectorColumnWidth(
+                    min: AlbumLayout.editorWidthRange.lowerBound,
+                    ideal: AlbumLayout.defaultEditorWidth,
+                    max: AlbumLayout.editorWidthRange.upperBound
+                )
         }
         .toolbar {
             ToolbarItemGroup {
@@ -166,6 +169,16 @@ private struct AlbumMainView: View {
                     Label("平台管理", systemImage: "rectangle.3.group")
                 }
                 .help("新增、重命名或删除空平台")
+
+                Button {
+                    isInspectorPresented.toggle()
+                } label: {
+                    Label(
+                        isInspectorPresented ? "隐藏资料栏" : "显示资料栏",
+                        systemImage: "sidebar.right"
+                    )
+                }
+                .help(isInspectorPresented ? "隐藏资料栏" : "显示资料栏")
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -201,61 +214,183 @@ private struct AlbumMainView: View {
             PlatformManagementView()
                 .environmentObject(model)
         }
+        .onChange(of: model.interfaceAction) { _, action in
+            guard let action else { return }
+            switch action {
+            case .createFolder:
+                newFolderName = ""
+                isShowingCreateFolder = true
+            case .addExistingFolder:
+                addExistingFolder()
+            case .importDatabase:
+                if let url = AlbumPanels.chooseDatabaseSnapshot() {
+                    model.importDatabaseSnapshot(url)
+                }
+            case .managePlatforms:
+                isShowingPlatformManagement = true
+            }
+            model.consumeInterfaceAction()
+        }
     }
 
     private var peopleSidebar: some View {
         VStack(spacing: 0) {
-            Button {
-                newFolderName = ""
-                isShowingCreateFolder = true
-            } label: {
-                Label("新建文件夹", systemImage: "folder.badge.plus")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+            HStack(spacing: 8) {
+                Button {
+                    newFolderName = ""
+                    isShowingCreateFolder = true
+                } label: {
+                    Label("新建文件夹", systemImage: "folder.badge.plus")
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("在 nickname 中新建一个空的人物文件夹")
+
+                Spacer(minLength: 8)
+
+                platformFilterMenu
+                peopleSortMenu
             }
-            .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .help("在 nickname 中新建一个空的人物文件夹")
 
-            Divider()
-            List(selection: $model.selectedPersonID) {
-                ForEach(model.people) { person in
-                    HStack(spacing: 9) {
-                        Image(systemName: person.folderExists ? "folder.fill" : "exclamationmark.folder.fill")
-                            .foregroundStyle(person.folderExists ? Color.accentColor : Color.orange)
-                        Text(person.nickname)
-                            .lineLimit(1)
-                        Spacer()
-                    }
-                    .tag(person.id)
-                }
-            }
-            .onChange(of: model.selectedPersonID) { _, _ in
-                model.loadSelectedPerson()
-            }
-
-            Divider()
-            HStack {
-                Image(systemName: "magnifyingglass")
+            HStack(spacing: 5) {
+                Text(sidebarSummary)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("搜索昵称、ID、备注…", text: $model.searchText)
-                    .textFieldStyle(.plain)
-                    .onSubmit { model.reloadPeople() }
-                if !model.searchText.isEmpty {
+                    .lineLimit(1)
+                Spacer()
+                if model.peopleListOptions.platform != nil {
                     Button {
-                        model.searchText = ""
-                        model.reloadPeople(selectFirstIfNeeded: true)
+                        model.setPlatformFilter(nil)
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
+                        Label("清除平台筛选", systemImage: "xmark.circle.fill")
+                            .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+                    .help("显示全部人物")
                 }
             }
-            .padding(10)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 7)
+
+            Divider()
+
+            Group {
+                if model.people.isEmpty, let platform = model.peopleListOptions.platform {
+                    VStack(spacing: 10) {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                            .font(.title2)
+                            .foregroundStyle(.secondary)
+                        Text("没有 \(platform) 记录")
+                            .font(.headline)
+                        Button("显示全部人物") {
+                            model.setPlatformFilter(nil)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding()
+                } else {
+                    List(selection: Binding(
+                        get: { model.selectedPersonID },
+                        set: { model.selectPerson($0) }
+                    )) {
+                        ForEach(model.people) { person in
+                            HStack(spacing: 9) {
+                                Image(systemName: person.folderExists ? "folder.fill" : "exclamationmark.folder.fill")
+                                    .foregroundStyle(person.folderExists ? Color.accentColor : Color.orange)
+                                Text(person.nickname)
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                            .tag(person.id)
+                            .accessibilityLabel(person.nickname)
+                            .accessibilityHint(
+                                person.folderExists ? "打开人物相册" : "人物文件夹不存在"
+                            )
+                        }
+                    }
+                }
+            }
+            .searchable(
+                text: $model.searchText,
+                placement: .sidebar,
+                prompt: "搜索昵称、账号、备注"
+            )
+            .onSubmit(of: .search) { model.reloadPeople() }
+            .onChange(of: model.searchText) { _, _ in
+                model.reloadPeople(selectFirstIfNeeded: true)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var platformFilterMenu: some View {
+        Menu {
+            Picker("平台筛选", selection: Binding(
+                get: { model.peopleListOptions.platform },
+                set: { model.setPlatformFilter($0) }
+            )) {
+                Text("全部人物").tag(nil as String?)
+                ForEach(model.platforms) { platform in
+                    Text(platform.name).tag(Optional(platform.name))
+                }
+            }
+        } label: {
+            Label(
+                model.peopleListOptions.platform.map { "筛选：\($0)" } ?? "筛选人物",
+                systemImage: model.peopleListOptions.platform == nil
+                    ? "line.3.horizontal.decrease.circle"
+                    : "line.3.horizontal.decrease.circle.fill"
+            )
+            .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(model.peopleListOptions.platform.map { "当前筛选：\($0)" } ?? "按平台筛选人物")
+        .accessibilityLabel(
+            model.peopleListOptions.platform.map { "平台筛选，当前为 \($0)" } ?? "平台筛选，当前显示全部人物"
+        )
+    }
+
+    private var peopleSortMenu: some View {
+        Menu {
+            Picker("排序依据", selection: Binding(
+                get: { model.peopleListOptions.sortField },
+                set: { model.setPeopleSortField($0) }
+            )) {
+                ForEach(PeopleSortField.allCases) { field in
+                    Text(field.title).tag(field)
+                }
+            }
+
+            Divider()
+
+            Picker("排序顺序", selection: Binding(
+                get: { model.peopleListOptions.sortDirection },
+                set: { model.setPeopleSortDirection($0) }
+            )) {
+                ForEach(PeopleSortDirection.allCases) { direction in
+                    Text(direction.title).tag(direction)
+                }
+            }
+        } label: {
+            Label("排序人物", systemImage: "arrow.up.arrow.down.circle")
+                .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("按\(model.peopleListOptions.sortField.title)\(model.peopleListOptions.sortDirection.title)排序")
+        .accessibilityLabel(
+            "人物排序，当前按\(model.peopleListOptions.sortField.title)\(model.peopleListOptions.sortDirection.title)"
+        )
+    }
+
+    private var sidebarSummary: String {
+        let count = "\(model.people.count) 人"
+        guard let platform = model.peopleListOptions.platform else { return count }
+        return "\(platform) · \(count)"
     }
 
     private func addExistingFolder() {
@@ -320,7 +455,8 @@ private struct PlatformManagementView: View {
                         renamedPlatformName = platform.name
                         renameTarget = platform
                     } label: {
-                        Image(systemName: "pencil")
+                        Label("重命名 \(platform.name)", systemImage: "pencil")
+                            .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.borderless)
                     .help("重命名“\(platform.name)”")
@@ -328,7 +464,8 @@ private struct PlatformManagementView: View {
                     Button(role: .destructive) {
                         deleteTarget = platform
                     } label: {
-                        Image(systemName: "trash")
+                        Label("删除 \(platform.name)", systemImage: "trash")
+                            .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.borderless)
                     .disabled(platform.accountCount > 0)
@@ -408,49 +545,11 @@ private struct PlatformManagementView: View {
     }
 }
 
-private struct ResizableColumnDivider: View {
-    @Binding var width: Double
-    let allowedRange: ClosedRange<Double>
-    let dragDirection: Double
-    let accessibilityName: String
-    @State private var dragStartWidth: Double?
-
-    var body: some View {
-        ZStack {
-            Color.clear
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(width: 1)
-        }
-        .frame(width: AlbumLayout.dividerHitWidth)
-        .frame(maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    if dragStartWidth == nil {
-                        dragStartWidth = width
-                    }
-                    let initial = dragStartWidth ?? width
-                    let proposed = initial + Double(value.translation.width) * dragDirection
-                    width = min(max(proposed, allowedRange.lowerBound), allowedRange.upperBound)
-                }
-                .onEnded { _ in
-                    dragStartWidth = nil
-                }
-        )
-        .onHover { isHovering in
-            (isHovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
-        }
-        .help("拖动调整栏宽；缩放窗口时保持此宽度")
-        .accessibilityLabel(accessibilityName)
-        .accessibilityAddTraits(.isButton)
-    }
-}
-
 private struct MediaBrowserView: View {
     @EnvironmentObject private var model: AlbumViewModel
     @State private var previewItem: MediaItem?
+    @State private var selectedMediaID: MediaItem.ID?
+    @FocusState private var isMediaGridFocused: Bool
     private let columns = [GridItem(.adaptive(minimum: 145, maximum: 220), spacing: 12)]
 
     var body: some View {
@@ -488,34 +587,121 @@ private struct MediaBrowserView: View {
                     description: Text("支持常见图片与视频格式，并会递归读取子文件夹。")
                 )
             } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(model.mediaItems) { item in
-                            VStack(alignment: .leading, spacing: 6) {
-                                MediaThumbnailView(item: item)
-                                Text(item.name)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                Text(ByteCountFormatter.string(fromByteCount: item.fileSize, countStyle: .file))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                            .onTapGesture(count: 2) { previewItem = item }
-                            .contextMenu {
-                                Button("预览") { previewItem = item }
-                                Button("在 Finder 中显示") {
-                                    NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(model.mediaItems) { item in
+                                MediaGridCell(item: item, isSelected: selectedMediaID == item.id)
+                                .onTapGesture(count: 2) {
+                                    selectedMediaID = item.id
+                                    previewItem = item
                                 }
+                                .onTapGesture {
+                                    selectedMediaID = item.id
+                                    isMediaGridFocused = true
+                                }
+                                .contextMenu {
+                                    Button("预览") { previewItem = item }
+                                    Button("在 Finder 中显示") {
+                                        NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                                    }
+                                }
+                                .accessibilityElement(children: .combine)
+                                .accessibilityLabel(
+                                    "\(item.name)，\(item.kind == .image ? "图片" : "视频")"
+                                )
+                                .accessibilityHint("按空格键预览")
+                                .accessibilityAddTraits(
+                                    selectedMediaID == item.id ? .isSelected : []
+                                )
+                                .id(item.id)
+                            }
+                        }
+                        .padding(14)
+                    }
+                    .focusable()
+                    .focused($isMediaGridFocused)
+                    .onChange(of: selectedMediaID) { _, id in
+                        if let id {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                proxy.scrollTo(id, anchor: .center)
                             }
                         }
                     }
-                    .padding(14)
+                    .onKeyPress(.space) {
+                        previewSelectedMedia()
+                    }
+                    .onKeyPress(.return) {
+                        previewSelectedMedia()
+                    }
+                    .onKeyPress(.leftArrow) {
+                        moveMediaSelection(by: -1)
+                    }
+                    .onKeyPress(.upArrow) {
+                        moveMediaSelection(by: -1)
+                    }
+                    .onKeyPress(.rightArrow) {
+                        moveMediaSelection(by: 1)
+                    }
+                    .onKeyPress(.downArrow) {
+                        moveMediaSelection(by: 1)
+                    }
                 }
             }
         }
+        .onChange(of: model.selectedPersonID) { _, _ in
+            selectedMediaID = nil
+        }
         .sheet(item: $previewItem) { item in
             MediaPreviewSheet(item: item)
+        }
+    }
+
+    private func previewSelectedMedia() -> KeyPress.Result {
+        guard let selectedMediaID,
+              let item = model.mediaItems.first(where: { $0.id == selectedMediaID }) else {
+            return .ignored
+        }
+        previewItem = item
+        return .handled
+    }
+
+    private func moveMediaSelection(by offset: Int) -> KeyPress.Result {
+        guard !model.mediaItems.isEmpty else { return .ignored }
+        let currentIndex = selectedMediaID.flatMap { selectedID in
+            model.mediaItems.firstIndex(where: { $0.id == selectedID })
+        } ?? (offset > 0 ? -1 : model.mediaItems.count)
+        let nextIndex = min(max(currentIndex + offset, 0), model.mediaItems.count - 1)
+        selectedMediaID = model.mediaItems[nextIndex].id
+        return .handled
+    }
+}
+
+private struct MediaGridCell: View {
+    let item: MediaItem
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            MediaThumbnailView(item: item)
+            Text(item.name)
+                .font(.caption)
+                .lineLimit(1)
+            Text(ByteCountFormatter.string(fromByteCount: item.fileSize, countStyle: .file))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
+        )
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.accentColor, lineWidth: 2)
+            }
         }
     }
 }
@@ -531,6 +717,15 @@ private struct PersonEditorView: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text("资料字段")
                     .font(.title3.bold())
+
+                Label {
+                    Text(saveStateDescription)
+                } icon: {
+                    Image(systemName: saveStateSymbol)
+                }
+                .font(.caption)
+                .foregroundStyle(model.saveState == .failed ? Color.red : Color.secondary)
+                .accessibilityLabel("保存状态：\(saveStateDescription)")
 
                 GroupBox("文件夹（唯一事实来源）") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -570,16 +765,13 @@ private struct PersonEditorView: View {
                 GroupBox("备注") {
                     VStack(alignment: .leading, spacing: 10) {
                         VStack(alignment: .leading, spacing: 4) {
-                            TextEditor(text: $model.draft.notes)
+                            TextEditor(text: Binding(
+                                get: { model.draft.notes },
+                                set: { model.updateNotes($0) }
+                            ))
                                 .frame(minHeight: 82)
                                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.separator))
-                                .onKeyPress(.return) {
-                                    // Let TextEditor insert the newline, then persist the updated text.
-                                    DispatchQueue.main.async {
-                                        model.saveSelectedPerson(silently: true)
-                                    }
-                                    return .ignored
-                                }
+                                .accessibilityLabel("备注")
                         }
                     }
                     .padding(.vertical, 4)
@@ -653,7 +845,8 @@ private struct PersonEditorView: View {
                     Button {
                         model.removeAccount(id: account.id)
                     } label: {
-                        Image(systemName: "minus.circle")
+                        Label("删除这一条 \(platform.name) 记录", systemImage: "minus.circle")
+                            .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
@@ -666,7 +859,8 @@ private struct PersonEditorView: View {
                 Button {
                     model.addAccount(for: platform)
                 } label: {
-                    Image(systemName: "plus.circle.fill")
+                    Label("增加一条 \(platform.name) 记录", systemImage: "plus.circle.fill")
+                        .labelStyle(.iconOnly)
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
@@ -686,6 +880,24 @@ private struct PersonEditorView: View {
         panel.directoryURL = model.libraryURL
         if panel.runModal() == .OK, let url = panel.url {
             model.replaceSelectedFolderPath(url)
+        }
+    }
+
+    private var saveStateDescription: String {
+        switch model.saveState {
+        case .saved: "已自动保存"
+        case .pending: "等待自动保存"
+        case .saving: "正在保存"
+        case .failed: "保存失败"
+        }
+    }
+
+    private var saveStateSymbol: String {
+        switch model.saveState {
+        case .saved: "checkmark.circle"
+        case .pending: "clock"
+        case .saving: "arrow.triangle.2.circlepath"
+        case .failed: "exclamationmark.triangle"
         }
     }
 }

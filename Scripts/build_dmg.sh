@@ -7,6 +7,7 @@ DIST_DIR="$PROJECT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/个人相册.app"
 DMG_PATH="$DIST_DIR/个人相册-本机版.dmg"
 INFO_PLIST="$PROJECT_DIR/Packaging/Info.plist"
+ENTITLEMENTS="$PROJECT_DIR/Packaging/PersonalAlbum.entitlements"
 LEGACY_APP_ICON="$PROJECT_DIR/Packaging/AppIcon.icns"
 COMPOSED_APP_ICON="$PROJECT_DIR/Packaging/AppIcon.icon"
 
@@ -28,6 +29,11 @@ fi
 
 if [[ ! -d "$COMPOSED_APP_ICON" ]]; then
     print -u2 "找不到 Icon Composer 图标：$COMPOSED_APP_ICON"
+    exit 1
+fi
+
+if [[ ! -f "$ENTITLEMENTS" ]]; then
+    print -u2 "找不到沙盒权限配置：$ENTITLEMENTS"
     exit 1
 fi
 
@@ -59,7 +65,7 @@ cp "$LEGACY_APP_ICON" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 chmod 755 "$APP_BUNDLE/Contents/MacOS/PersonalAlbum"
 plutil -lint "$APP_BUNDLE/Contents/Info.plist"
 
-codesign --force --deep --sign - "$APP_BUNDLE"
+codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$APP_BUNDLE"
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
 STAGING_DIR=$(mktemp -d "${TMPDIR:-/tmp}/personal-album-dmg.XXXXXX")

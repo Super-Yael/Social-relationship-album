@@ -3,18 +3,127 @@ import XCTest
 @testable import PersonalAlbum
 
 final class PersonalAlbumTests: XCTestCase {
-    func testAlbumLayoutKeepsAdjustableColumnsInsideSafeRanges() {
+    func testNativeSplitViewUsesFlexibleCompactWindowMetrics() {
         XCTAssertEqual(AlbumLayout.defaultSidebarWidth, 280)
         XCTAssertEqual(AlbumLayout.defaultEditorWidth, 420)
-        XCTAssertEqual(AlbumLayout.mediaMinimumWidth, 500)
-        XCTAssertEqual(AlbumLayout.clampedSidebarWidth(100), 220)
-        XCTAssertEqual(AlbumLayout.clampedSidebarWidth(500), 420)
-        XCTAssertEqual(AlbumLayout.clampedEditorWidth(100), 340)
-        XCTAssertEqual(AlbumLayout.clampedEditorWidth(700), 560)
-        XCTAssertGreaterThanOrEqual(
-            AlbumLayout.minimumWindowWidth(sidebarWidth: 420, editorWidth: 560),
-            420 + 560 + AlbumLayout.mediaMinimumWidth + AlbumLayout.dividerHitWidth * 2
+        XCTAssertEqual(AlbumLayout.sidebarWidthRange, 220...420)
+        XCTAssertEqual(AlbumLayout.editorWidthRange, 340...560)
+        XCTAssertEqual(AlbumLayout.minimumWindowWidth, 760)
+        XCTAssertEqual(AlbumLayout.minimumWindowHeight, 560)
+    }
+
+    func testPersistentStatePathsStayInsideApplicationDataDirectory() throws {
+        let root = try AppPaths.applicationDataURL()
+        let database = try AppPaths.databaseURL()
+        let backups = try AppPaths.backupDirectoryURL()
+        let bookmark = try AppPaths.libraryBookmarkURL()
+
+        XCTAssertTrue(AppPaths.isInsideApplicationData(database))
+        XCTAssertTrue(AppPaths.isInsideApplicationData(backups))
+        XCTAssertTrue(AppPaths.isInsideApplicationData(bookmark))
+        XCTAssertEqual(database.deletingLastPathComponent(), root)
+        XCTAssertEqual(bookmark.deletingLastPathComponent(), root)
+        XCTAssertEqual(backups.deletingLastPathComponent(), root)
+    }
+
+    func testLibraryBookmarkRoundTripStaysInsideApplicationDataDirectory() throws {
+        let temporaryLibrary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumBookmarkSource-\(UUID().uuidString)", isDirectory: true)
+        let testDataDirectory = try AppPaths.applicationDataURL()
+            .appendingPathComponent("Tests-\(UUID().uuidString)", isDirectory: true)
+        let bookmarkURL = testDataDirectory.appendingPathComponent("library.bookmark")
+        defer { try? FileManager.default.removeItem(at: temporaryLibrary) }
+        defer { try? FileManager.default.removeItem(at: testDataDirectory) }
+        try FileManager.default.createDirectory(at: temporaryLibrary, withIntermediateDirectories: true)
+
+        do {
+            let access = LibraryAccessController(bookmarkURL: bookmarkURL)
+            XCTAssertEqual(
+                try access.rememberAndAccessLibrary(temporaryLibrary).standardizedFileURL,
+                temporaryLibrary.standardizedFileURL
+            )
+            access.stopAccessingLibrary()
+        }
+
+        let restoredAccess = LibraryAccessController(bookmarkURL: bookmarkURL)
+        XCTAssertEqual(
+            try restoredAccess.restoreLibrary()?.standardizedFileURL,
+            temporaryLibrary.standardizedFileURL
         )
+        XCTAssertTrue(AppPaths.isInsideApplicationData(bookmarkURL))
+        restoredAccess.stopAccessingLibrary()
+    }
+
+    func testStoreRefusesPersistentFilesOutsideApplicationDataDirectory() {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumBoundaryTests-\(UUID().uuidString)", isDirectory: true)
+        let database = temporaryRoot.appendingPathComponent("outside.sqlite")
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        XCTAssertThrowsError(
+            try SQLiteStore(
+                databaseURL: database,
+                backupDirectoryURL: temporaryRoot.appendingPathComponent("backups", isDirectory: true),
+                backupLimitBytes: 512 * 1024,
+                requiresApplicationDataLocation: true
+            )
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: database.path))
+    }
+
+    func testApplicationDataBoundaryRejectsSymlinkEscape() throws {
+        let outsideDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumSymlinkTarget-\(UUID().uuidString)", isDirectory: true)
+        let testDirectory = try AppPaths.applicationDataURL()
+            .appendingPathComponent("Tests-\(UUID().uuidString)", isDirectory: true)
+        let symlink = testDirectory.appendingPathComponent("escape", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outsideDirectory) }
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+        try FileManager.default.createDirectory(at: outsideDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: outsideDirectory)
+
+        XCTAssertFalse(
+            AppPaths.isInsideApplicationData(
+                symlink.appendingPathComponent("escaped.sqlite", isDirectory: false)
+            )
+        )
+    }
+
+    func testDatabaseSnapshotImportCreatesIndependentConsistentCopy() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumImportTests-\(UUID().uuidString)", isDirectory: true)
+        let library = temporaryRoot.appendingPathComponent("library", isDirectory: true)
+        let personFolder = library.appendingPathComponent("导入人物", isDirectory: true)
+        let sourceDatabase = temporaryRoot.appendingPathComponent("source.sqlite")
+        let importTestDirectory = try AppPaths.applicationDataURL()
+            .appendingPathComponent("Tests-\(UUID().uuidString)", isDirectory: true)
+        let importedDatabase = importTestDirectory.appendingPathComponent("imported.sqlite")
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        defer { try? FileManager.default.removeItem(at: importTestDirectory) }
+        try FileManager.default.createDirectory(at: personFolder, withIntermediateDirectories: true)
+
+        do {
+            let sourceStore = try SQLiteStore(
+                databaseURL: sourceDatabase,
+                backupDirectoryURL: temporaryRoot.appendingPathComponent("source-backups"),
+                backupLimitBytes: 512 * 1024
+            )
+            XCTAssertEqual(
+                try sourceStore.importMissingFolders(LibraryScanner.scanPeople(in: library)),
+                1
+            )
+        }
+
+        try SQLiteStore.importSnapshot(from: sourceDatabase, to: importedDatabase)
+
+        let importedStore = try SQLiteStore(
+            databaseURL: importedDatabase,
+            backupDirectoryURL: temporaryRoot.appendingPathComponent("imported-backups"),
+            backupLimitBytes: 512 * 1024
+        )
+        XCTAssertEqual(try importedStore.listPeople().map(\.nickname), ["导入人物"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceDatabase.path))
     }
 
     func testBackupLimitIsFiftyMiB() {
@@ -74,6 +183,102 @@ final class PersonalAlbumTests: XCTestCase {
         try store.deletePerson(id: person.id)
         XCTAssertEqual(try store.personCount(), 0)
         XCTAssertEqual(try relativeContents(of: library), originalContents)
+    }
+
+    func testPlatformFilteringFinderStyleSortingAndPreferencePersistence() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumListOptionsTests-\(UUID().uuidString)", isDirectory: true)
+        let library = temporaryRoot.appendingPathComponent("nickname", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        for name in ["Charlie", "Alice", "Bob"] {
+            try FileManager.default.createDirectory(
+                at: library.appendingPathComponent(name, isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+
+        let store = try SQLiteStore(
+            databaseURL: temporaryRoot.appendingPathComponent("个人相册.sqlite"),
+            backupDirectoryURL: temporaryRoot.appendingPathComponent("backups", isDirectory: true),
+            backupLimitBytes: 512 * 1024
+        )
+        XCTAssertEqual(try store.importMissingFolders(LibraryScanner.scanPeople(in: library)), 3)
+
+        let people = try store.listPeople()
+        let alice = try XCTUnwrap(people.first(where: { $0.nickname == "Alice" }))
+        let charlie = try XCTUnwrap(people.first(where: { $0.nickname == "Charlie" }))
+        try store.updatePerson(
+            id: alice.id,
+            draft: PersonDraft(person: alice),
+            accounts: [
+                SocialAccountRecord(
+                    id: -1,
+                    personID: alice.id,
+                    platform: "QQ",
+                    value: "12345678",
+                    sortOrder: 0
+                )
+            ]
+        )
+        try store.updatePerson(
+            id: charlie.id,
+            draft: PersonDraft(person: charlie),
+            accounts: [
+                SocialAccountRecord(
+                    id: -2,
+                    personID: charlie.id,
+                    platform: "微信",
+                    value: "wxid_charlie",
+                    sortOrder: 0
+                )
+            ]
+        )
+        var updatedAliceDraft = PersonDraft(person: alice)
+        updatedAliceDraft.notes = "最后修改"
+        try store.updatePerson(
+            id: alice.id,
+            draft: updatedAliceDraft,
+            accounts: [
+                SocialAccountRecord(
+                    id: -3,
+                    personID: alice.id,
+                    platform: "QQ",
+                    value: "12345678",
+                    sortOrder: 0
+                )
+            ]
+        )
+
+        XCTAssertEqual(
+            try store.listPeople(platform: "qq").map(\.nickname),
+            ["Alice"]
+        )
+        XCTAssertEqual(
+            try store.listPeople(
+                sortField: .nickname,
+                sortDirection: .descending
+            ).map(\.nickname),
+            ["Charlie", "Bob", "Alice"]
+        )
+        XCTAssertEqual(
+            try store.listPeople(
+                sortField: .updatedAt,
+                sortDirection: .descending
+            ).first?.nickname,
+            "Alice"
+        )
+        XCTAssertTrue(
+            try store.listPeople(search: "Charlie", platform: "QQ").isEmpty
+        )
+
+        let options = PeopleListOptions(
+            platform: "QQ",
+            sortField: .updatedAt,
+            sortDirection: .descending
+        )
+        try store.savePeopleListOptions(options)
+        XCTAssertEqual(try store.loadPeopleListOptions(), options)
     }
 
     func testPlatformManagementPreservesDataAndOnlyDeletesEmptyPlatforms() throws {

@@ -10,10 +10,97 @@ final class SQLiteStore {
 
     private var database: OpaquePointer?
 
-    init(databaseURL: URL, backupDirectoryURL: URL, backupLimitBytes: Int64) throws {
+    static func importSnapshot(from sourceURL: URL, to destinationURL: URL) throws {
+        guard AppPaths.isInsideApplicationData(destinationURL) else {
+            throw AlbumError.database("拒绝将数据库导入 App 数据目录之外。")
+        }
+        guard sourceURL.standardizedFileURL != destinationURL.standardizedFileURL else {
+            throw AlbumError.database("所选数据库已经是 App 当前使用的数据库。")
+        }
+
+        let fileManager = FileManager.default
+        let destinationDirectory = destinationURL.deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: destinationDirectory,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        let temporaryURL = destinationDirectory.appendingPathComponent(
+            ".database-import-\(UUID().uuidString).sqlite",
+            isDirectory: false
+        )
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+
+        var sourceDatabase: OpaquePointer?
+        guard sqlite3_open_v2(
+            sourceURL.path,
+            &sourceDatabase,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK else {
+            let message = sourceDatabase.map { String(cString: sqlite3_errmsg($0)) } ?? "未知错误"
+            sqlite3_close(sourceDatabase)
+            throw AlbumError.database("无法读取所选数据库：\(message)")
+        }
+        defer { sqlite3_close(sourceDatabase) }
+
+        var importedDatabase: OpaquePointer?
+        guard sqlite3_open_v2(
+            temporaryURL.path,
+            &importedDatabase,
+            SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        ) == SQLITE_OK else {
+            let message = importedDatabase.map { String(cString: sqlite3_errmsg($0)) } ?? "未知错误"
+            sqlite3_close(importedDatabase)
+            throw AlbumError.database("无法在 App 数据目录中创建导入副本：\(message)")
+        }
+
+        guard let backup = sqlite3_backup_init(importedDatabase, "main", sourceDatabase, "main") else {
+            let message = String(cString: sqlite3_errmsg(importedDatabase))
+            sqlite3_close(importedDatabase)
+            throw AlbumError.database("无法启动数据库导入：\(message)")
+        }
+        let stepResult = sqlite3_backup_step(backup, -1)
+        let finishResult = sqlite3_backup_finish(backup)
+        let importedError = String(cString: sqlite3_errmsg(importedDatabase))
+        sqlite3_close(importedDatabase)
+        guard stepResult == SQLITE_DONE, finishResult == SQLITE_OK else {
+            throw AlbumError.database("数据库导入失败：\(importedError)")
+        }
+
+        for suffix in ["-wal", "-shm"] {
+            try? fileManager.removeItem(atPath: destinationURL.path + suffix)
+        }
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+        }
+    }
+
+    init(
+        databaseURL: URL,
+        backupDirectoryURL: URL,
+        backupLimitBytes: Int64,
+        requiresApplicationDataLocation: Bool = false
+    ) throws {
         self.databaseURL = databaseURL
         self.backupDirectoryURL = backupDirectoryURL
         self.backupLimitBytes = backupLimitBytes
+
+        if requiresApplicationDataLocation {
+            guard AppPaths.isInsideApplicationData(databaseURL),
+                  AppPaths.isInsideApplicationData(backupDirectoryURL) else {
+                throw AlbumError.database("拒绝在 App 数据目录之外创建数据库或备份。")
+            }
+        }
+
+        try FileManager.default.createDirectory(
+            at: databaseURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
 
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(databaseURL.path, &database, flags, nil) == SQLITE_OK else {
@@ -44,6 +131,27 @@ final class SQLiteStore {
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
             bindings: [.text(path)]
         )
+    }
+
+    func loadPeopleListOptions() throws -> PeopleListOptions {
+        let platform = try settingValue(for: "people_filter_platform")
+        let sortField = try settingValue(for: "people_sort_field")
+            .flatMap(PeopleSortField.init(rawValue:)) ?? .nickname
+        let sortDirection = try settingValue(for: "people_sort_direction")
+            .flatMap(PeopleSortDirection.init(rawValue:)) ?? .ascending
+        return PeopleListOptions(
+            platform: platform?.isEmpty == false ? platform : nil,
+            sortField: sortField,
+            sortDirection: sortDirection
+        )
+    }
+
+    func savePeopleListOptions(_ options: PeopleListOptions) throws {
+        try transaction {
+            try saveSetting(key: "people_filter_platform", value: options.platform ?? "")
+            try saveSetting(key: "people_sort_field", value: options.sortField.rawValue)
+            try saveSetting(key: "people_sort_direction", value: options.sortDirection.rawValue)
+        }
     }
 
     func personCount() throws -> Int {
@@ -81,33 +189,68 @@ final class SQLiteStore {
         return records
     }
 
-    func listPeople(search: String = "") throws -> [PersonRecord] {
+    func listPeople(
+        search: String = "",
+        platform: String? = nil,
+        sortField: PeopleSortField = .nickname,
+        sortDirection: PeopleSortDirection = .ascending
+    ) throws -> [PersonRecord] {
         let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sql: String
-        let bindings: [Binding]
-        if trimmed.isEmpty {
-            sql = """
-                SELECT id, nickname, folder_path, notes, created_at, updated_at
-                FROM people
-                ORDER BY nickname COLLATE NOCASE, folder_path COLLATE NOCASE;
+        let filteredPlatform = platform?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var clauses: [String] = []
+        var bindings: [Binding] = []
+
+        if !trimmed.isEmpty {
+            clauses.append(
                 """
-            bindings = []
-        } else {
-            sql = """
-                SELECT DISTINCT p.id, p.nickname, p.folder_path,
-                       p.notes, p.created_at, p.updated_at
-                FROM people p
-                LEFT JOIN social_accounts a ON a.person_id = p.id
-                WHERE p.nickname LIKE ? ESCAPE '\\'
-                   OR p.folder_path LIKE ? ESCAPE '\\'
-                   OR p.notes LIKE ? ESCAPE '\\'
-                   OR a.platform LIKE ? ESCAPE '\\'
-                   OR a.value LIKE ? ESCAPE '\\'
-                ORDER BY p.nickname COLLATE NOCASE, p.folder_path COLLATE NOCASE;
+                (p.nickname LIKE ? ESCAPE '\\'
+                 OR p.folder_path LIKE ? ESCAPE '\\'
+                 OR p.notes LIKE ? ESCAPE '\\'
+                 OR EXISTS(
+                     SELECT 1 FROM social_accounts search_account
+                     WHERE search_account.person_id = p.id
+                       AND (search_account.platform LIKE ? ESCAPE '\\'
+                            OR search_account.value LIKE ? ESCAPE '\\')
+                 ))
                 """
+            )
             let pattern = "%\(escapeLike(trimmed))%"
-            bindings = Array(repeating: .text(pattern), count: 5)
+            bindings.append(contentsOf: Array(repeating: .text(pattern), count: 5))
         }
+        if let filteredPlatform, !filteredPlatform.isEmpty {
+            clauses.append(
+                """
+                EXISTS(
+                    SELECT 1 FROM social_accounts filter_account
+                    WHERE filter_account.person_id = p.id
+                      AND filter_account.platform = ? COLLATE NOCASE
+                      AND TRIM(filter_account.value) <> ''
+                )
+                """
+            )
+            bindings.append(.text(filteredPlatform))
+        }
+
+        let direction = sortDirection == .ascending ? "ASC" : "DESC"
+        let primarySort: String
+        switch sortField {
+        case .nickname:
+            primarySort = "p.nickname COLLATE NOCASE \(direction)"
+        case .createdAt:
+            primarySort = "p.created_at \(direction)"
+        case .updatedAt:
+            primarySort = "p.updated_at \(direction)"
+        }
+        let whereClause = clauses.isEmpty ? "" : "WHERE " + clauses.joined(separator: " AND ")
+        let sql = """
+            SELECT p.id, p.nickname, p.folder_path,
+                   p.notes, p.created_at, p.updated_at
+            FROM people p
+            \(whereClause)
+            ORDER BY \(primarySort), p.nickname COLLATE NOCASE ASC,
+                     p.folder_path COLLATE NOCASE ASC;
+            """
 
         let statement = try prepare(sql, bindings: bindings)
         defer { sqlite3_finalize(statement) }
@@ -693,6 +836,26 @@ final class SQLiteStore {
             throw AlbumError.database("平台名称不能包含换行或控制字符。")
         }
         return name
+    }
+
+    private func settingValue(for key: String) throws -> String? {
+        let statement = try prepare(
+            "SELECT value FROM settings WHERE key = ? LIMIT 1;",
+            bindings: [.text(key)]
+        )
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return columnText(statement, 0)
+    }
+
+    private func saveSetting(key: String, value: String) throws {
+        try execute(
+            """
+            INSERT INTO settings(key, value) VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            bindings: [.text(key), .text(value)]
+        )
     }
 
     private func textValue(column: String, personID: Int64) throws -> String {

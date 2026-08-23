@@ -152,6 +152,7 @@ private struct AlbumMainView: View {
                 } label: {
                     Label("扫描 nickname", systemImage: "arrow.triangle.2.circlepath")
                 }
+                .help("立即扫描并只补录尚未进入数据库的一级文件夹")
 
                 Button {
                     model.createManualBackup()

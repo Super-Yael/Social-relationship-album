@@ -210,6 +210,55 @@ final class PersonalAlbumTests: XCTestCase {
         XCTAssertEqual(folders.map(\.nickname), ["示例人物"])
     }
 
+    func testRepeatedScansOnlyImportNewFolderPaths() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumRepeatedScanTests-\(UUID().uuidString)", isDirectory: true)
+        let library = temporaryRoot.appendingPathComponent("nickname", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        try FileManager.default.createDirectory(
+            at: library.appendingPathComponent("已有人物", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let store = try SQLiteStore(
+            databaseURL: temporaryRoot.appendingPathComponent("个人相册.sqlite"),
+            backupDirectoryURL: temporaryRoot.appendingPathComponent("备份", isDirectory: true),
+            backupLimitBytes: 512 * 1024
+        )
+
+        XCTAssertEqual(try store.importMissingFolders(LibraryScanner.scanPeople(in: library)), 1)
+        XCTAssertEqual(try store.importMissingFolders(LibraryScanner.scanPeople(in: library)), 0)
+
+        try FileManager.default.createDirectory(
+            at: library.appendingPathComponent("新人物", isDirectory: true),
+            withIntermediateDirectories: false
+        )
+        XCTAssertEqual(try store.importMissingFolders(LibraryScanner.scanPeople(in: library)), 1)
+        XCTAssertEqual(Set(try store.listPeople().map(\.nickname)), Set(["已有人物", "新人物"]))
+        XCTAssertEqual(try store.importMissingFolders(LibraryScanner.scanPeople(in: library)), 0)
+    }
+
+    @MainActor
+    func testFolderMonitorNotifiesWhenRootGetsANewFolder() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PersonalAlbumMonitorTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+
+        let notified = expectation(description: "检测到 nickname 根目录发生变化")
+        let monitor = LibraryFolderMonitor()
+        try monitor.start(watching: temporaryRoot) {
+            notified.fulfill()
+        }
+
+        try FileManager.default.createDirectory(
+            at: temporaryRoot.appendingPathComponent("新人物", isDirectory: true),
+            withIntermediateDirectories: false
+        )
+        wait(for: [notified], timeout: 3)
+        monitor.stop()
+    }
+
     func testLegacyFinderCommentClassification() {
         let classified = LegacySocialImporter.classify(
             "1234567890 wxid_example @telegram_user " +

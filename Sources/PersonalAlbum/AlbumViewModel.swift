@@ -18,6 +18,7 @@ final class AlbumViewModel: ObservableObject {
 
     private var store: SQLiteStore?
     private var mediaLoadGeneration = UUID()
+    private let folderMonitor = LibraryFolderMonitor()
 
     init() {
         if let libraryURL = AppPaths.configuredLibraryURL {
@@ -33,6 +34,7 @@ final class AlbumViewModel: ObservableObject {
     }
 
     func configure(libraryURL: URL) {
+        folderMonitor.stop()
         do {
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: libraryURL.path, isDirectory: &isDirectory),
@@ -51,16 +53,25 @@ final class AlbumViewModel: ObservableObject {
             AppPaths.rememberLibrary(normalized)
             try store.saveLibraryRoot(normalized.path)
 
-            if try store.personCount() == 0 {
-                let scanned = try LibraryScanner.scanPeople(in: normalized)
-                let count = try store.importMissingFolders(scanned)
-                statusMessage = "首次读取了 \(count) 个 nickname 文件夹；没有修改任何媒体文件。"
-            }
+            let scanned = try LibraryScanner.scanPeople(in: normalized)
+            let count = try store.importMissingFolders(scanned)
+            statusMessage = count == 0
+                ? "启动扫描完成，没有发现新的一级文件夹。"
+                : "启动扫描新增了 \(count) 条数据库记录；媒体文件未改变。"
             try store.backupNow()
             platforms = try store.listPlatforms()
             reloadPeople(selectFirstIfNeeded: true)
             refreshBackupCount()
+            do {
+                try folderMonitor.start(watching: normalized) { [weak self] in
+                    self?.scanForNewFoldersAutomatically()
+                }
+            } catch {
+                statusMessage += " 实时监听未启动，请使用工具栏中的“扫描 nickname”。"
+                show(error)
+            }
         } catch {
+            folderMonitor.stop()
             self.store = nil
             self.libraryURL = nil
             self.platforms = []
@@ -217,14 +228,28 @@ final class AlbumViewModel: ObservableObject {
     }
 
     func scanForNewFolders() {
+        scanForNewFolders(announceWhenEmpty: true)
+    }
+
+    private func scanForNewFoldersAutomatically() {
+        scanForNewFolders(announceWhenEmpty: false)
+    }
+
+    private func scanForNewFolders(announceWhenEmpty: Bool) {
         guard let store, let libraryURL else { return }
         do {
             let scanned = try LibraryScanner.scanPeople(in: libraryURL)
             let count = try store.importMissingFolders(scanned)
-            platforms = try store.listPlatforms()
-            reloadPeople(selectFirstIfNeeded: true)
-            statusMessage = count == 0 ? "没有发现新的一级文件夹。" : "新增了 \(count) 条数据库记录；媒体文件未改变。"
-            refreshBackupCount()
+            if count > 0 {
+                platforms = try store.listPlatforms()
+                reloadPeople(selectFirstIfNeeded: true)
+                statusMessage = announceWhenEmpty
+                    ? "新增了 \(count) 条数据库记录；媒体文件未改变。"
+                    : "检测到新的 nickname 文件夹，已自动新增 \(count) 条数据库记录。"
+                refreshBackupCount()
+            } else if announceWhenEmpty {
+                statusMessage = "没有发现新的一级文件夹。"
+            }
         } catch {
             show(error)
         }

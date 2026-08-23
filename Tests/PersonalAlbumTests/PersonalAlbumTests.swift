@@ -3,6 +3,20 @@ import XCTest
 @testable import PersonalAlbum
 
 final class PersonalAlbumTests: XCTestCase {
+    func testAlbumLayoutKeepsAdjustableColumnsInsideSafeRanges() {
+        XCTAssertEqual(AlbumLayout.defaultSidebarWidth, 280)
+        XCTAssertEqual(AlbumLayout.defaultEditorWidth, 420)
+        XCTAssertEqual(AlbumLayout.mediaMinimumWidth, 500)
+        XCTAssertEqual(AlbumLayout.clampedSidebarWidth(100), 220)
+        XCTAssertEqual(AlbumLayout.clampedSidebarWidth(500), 420)
+        XCTAssertEqual(AlbumLayout.clampedEditorWidth(100), 340)
+        XCTAssertEqual(AlbumLayout.clampedEditorWidth(700), 560)
+        XCTAssertGreaterThanOrEqual(
+            AlbumLayout.minimumWindowWidth(sidebarWidth: 420, editorWidth: 560),
+            420 + 560 + AlbumLayout.mediaMinimumWidth + AlbumLayout.dividerHitWidth * 2
+        )
+    }
+
     func testBackupLimitIsFiftyMiB() {
         XCTAssertEqual(AppPaths.backupLimitBytes, 50 * 1024 * 1024)
     }

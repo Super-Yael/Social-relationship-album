@@ -1,6 +1,34 @@
 import AppKit
 import SwiftUI
 
+enum AlbumLayout {
+    static let sidebarWidthKey = "album.sidebar-width"
+    static let editorWidthKey = "album.editor-width"
+    static let defaultSidebarWidth = 280.0
+    static let defaultEditorWidth = 420.0
+    static let sidebarWidthRange = 220.0...420.0
+    static let editorWidthRange = 340.0...560.0
+    static let mediaMinimumWidth: CGFloat = 500
+    static let dividerHitWidth: CGFloat = 8
+    static let baseMinimumWindowWidth: CGFloat = 1_240
+
+    static func clampedSidebarWidth(_ width: Double) -> Double {
+        min(max(width, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)
+    }
+
+    static func clampedEditorWidth(_ width: Double) -> Double {
+        min(max(width, editorWidthRange.lowerBound), editorWidthRange.upperBound)
+    }
+
+    static func minimumWindowWidth(sidebarWidth: Double, editorWidth: Double) -> CGFloat {
+        let columns = clampedSidebarWidth(sidebarWidth)
+            + clampedEditorWidth(editorWidth)
+            + Double(mediaMinimumWidth)
+            + Double(dividerHitWidth * 2)
+        return max(baseMinimumWindowWidth, CGFloat(columns))
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var model: AlbumViewModel
 
@@ -62,30 +90,53 @@ private struct SetupView: View {
 
 private struct AlbumMainView: View {
     @EnvironmentObject private var model: AlbumViewModel
+    @AppStorage(AlbumLayout.sidebarWidthKey)
+    private var sidebarWidth = AlbumLayout.defaultSidebarWidth
+    @AppStorage(AlbumLayout.editorWidthKey)
+    private var editorWidth = AlbumLayout.defaultEditorWidth
     @State private var isShowingDeleteConfirmation = false
     @State private var isShowingCreateFolder = false
     @State private var isShowingPlatformManagement = false
     @State private var newFolderName = ""
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             peopleSidebar
-                .navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 390)
-        } detail: {
-            if model.selectedPerson != nil {
-                HSplitView {
-                    MediaBrowserView()
-                        .frame(minWidth: 500)
-                    PersonEditorView(isShowingDeleteConfirmation: $isShowingDeleteConfirmation)
-                        .frame(minWidth: 370, idealWidth: 420, maxWidth: 520)
+                .frame(width: CGFloat(AlbumLayout.clampedSidebarWidth(sidebarWidth)))
+                .background(.bar)
+
+            ResizableColumnDivider(
+                width: $sidebarWidth,
+                allowedRange: AlbumLayout.sidebarWidthRange,
+                dragDirection: 1,
+                accessibilityName: "调整人物侧边栏宽度"
+            )
+
+            Group {
+                if model.selectedPerson != nil {
+                    HStack(spacing: 0) {
+                        MediaBrowserView()
+                            .frame(minWidth: AlbumLayout.mediaMinimumWidth, maxWidth: .infinity)
+
+                        ResizableColumnDivider(
+                            width: $editorWidth,
+                            allowedRange: AlbumLayout.editorWidthRange,
+                            dragDirection: -1,
+                            accessibilityName: "调整资料栏宽度"
+                        )
+
+                        PersonEditorView(isShowingDeleteConfirmation: $isShowingDeleteConfirmation)
+                            .frame(width: CGFloat(AlbumLayout.clampedEditorWidth(editorWidth)))
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "没有人物记录",
+                        systemImage: "person.crop.rectangle.stack",
+                        description: Text("扫描 nickname 或添加一个已有文件夹。")
+                    )
                 }
-            } else {
-                ContentUnavailableView(
-                    "没有人物记录",
-                    systemImage: "person.crop.rectangle.stack",
-                    description: Text("扫描 nickname 或添加一个已有文件夹。")
-                )
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .toolbar {
             ToolbarItemGroup {
@@ -203,6 +254,7 @@ private struct AlbumMainView: View {
             }
             .padding(10)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func addExistingFolder() {
@@ -355,6 +407,46 @@ private struct PlatformManagementView: View {
     }
 }
 
+private struct ResizableColumnDivider: View {
+    @Binding var width: Double
+    let allowedRange: ClosedRange<Double>
+    let dragDirection: Double
+    let accessibilityName: String
+    @State private var dragStartWidth: Double?
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+        }
+        .frame(width: AlbumLayout.dividerHitWidth)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if dragStartWidth == nil {
+                        dragStartWidth = width
+                    }
+                    let initial = dragStartWidth ?? width
+                    let proposed = initial + Double(value.translation.width) * dragDirection
+                    width = min(max(proposed, allowedRange.lowerBound), allowedRange.upperBound)
+                }
+                .onEnded { _ in
+                    dragStartWidth = nil
+                }
+        )
+        .onHover { isHovering in
+            (isHovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
+        }
+        .help("拖动调整栏宽；缩放窗口时保持此宽度")
+        .accessibilityLabel(accessibilityName)
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
 private struct MediaBrowserView: View {
     @EnvironmentObject private var model: AlbumViewModel
     @State private var previewItem: MediaItem?
@@ -480,6 +572,13 @@ private struct PersonEditorView: View {
                             TextEditor(text: $model.draft.notes)
                                 .frame(minHeight: 82)
                                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(.separator))
+                                .onKeyPress(.return) {
+                                    // Let TextEditor insert the newline, then persist the updated text.
+                                    DispatchQueue.main.async {
+                                        model.saveSelectedPerson(silently: true)
+                                    }
+                                    return .ignored
+                                }
                         }
                     }
                     .padding(.vertical, 4)
@@ -546,6 +645,9 @@ private struct PersonEditorView: View {
                         )
                     )
                     .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        model.saveSelectedPerson(silently: true)
+                    }
 
                     Button {
                         model.removeAccount(id: account.id)

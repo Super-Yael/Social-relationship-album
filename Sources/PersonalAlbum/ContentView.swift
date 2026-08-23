@@ -2,10 +2,31 @@ import AppKit
 import SwiftUI
 
 enum AlbumLayout {
-    static let sidebarWidth: CGFloat = 280
-    static let editorWidth: CGFloat = 420
+    static let sidebarWidthKey = "album.sidebar-width"
+    static let editorWidthKey = "album.editor-width"
+    static let defaultSidebarWidth = 280.0
+    static let defaultEditorWidth = 420.0
+    static let sidebarWidthRange = 220.0...420.0
+    static let editorWidthRange = 340.0...560.0
     static let mediaMinimumWidth: CGFloat = 500
-    static let minimumWindowWidth: CGFloat = 1_240
+    static let dividerHitWidth: CGFloat = 8
+    static let baseMinimumWindowWidth: CGFloat = 1_240
+
+    static func clampedSidebarWidth(_ width: Double) -> Double {
+        min(max(width, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)
+    }
+
+    static func clampedEditorWidth(_ width: Double) -> Double {
+        min(max(width, editorWidthRange.lowerBound), editorWidthRange.upperBound)
+    }
+
+    static func minimumWindowWidth(sidebarWidth: Double, editorWidth: Double) -> CGFloat {
+        let columns = clampedSidebarWidth(sidebarWidth)
+            + clampedEditorWidth(editorWidth)
+            + Double(mediaMinimumWidth)
+            + Double(dividerHitWidth * 2)
+        return max(baseMinimumWindowWidth, CGFloat(columns))
+    }
 }
 
 struct ContentView: View {
@@ -69,6 +90,10 @@ private struct SetupView: View {
 
 private struct AlbumMainView: View {
     @EnvironmentObject private var model: AlbumViewModel
+    @AppStorage(AlbumLayout.sidebarWidthKey)
+    private var sidebarWidth = AlbumLayout.defaultSidebarWidth
+    @AppStorage(AlbumLayout.editorWidthKey)
+    private var editorWidth = AlbumLayout.defaultEditorWidth
     @State private var isShowingDeleteConfirmation = false
     @State private var isShowingCreateFolder = false
     @State private var isShowingPlatformManagement = false
@@ -77,10 +102,15 @@ private struct AlbumMainView: View {
     var body: some View {
         HStack(spacing: 0) {
             peopleSidebar
-                .frame(width: AlbumLayout.sidebarWidth)
+                .frame(width: CGFloat(AlbumLayout.clampedSidebarWidth(sidebarWidth)))
                 .background(.bar)
 
-            Divider()
+            ResizableColumnDivider(
+                width: $sidebarWidth,
+                allowedRange: AlbumLayout.sidebarWidthRange,
+                dragDirection: 1,
+                accessibilityName: "调整人物侧边栏宽度"
+            )
 
             Group {
                 if model.selectedPerson != nil {
@@ -88,10 +118,15 @@ private struct AlbumMainView: View {
                         MediaBrowserView()
                             .frame(minWidth: AlbumLayout.mediaMinimumWidth, maxWidth: .infinity)
 
-                        Divider()
+                        ResizableColumnDivider(
+                            width: $editorWidth,
+                            allowedRange: AlbumLayout.editorWidthRange,
+                            dragDirection: -1,
+                            accessibilityName: "调整资料栏宽度"
+                        )
 
                         PersonEditorView(isShowingDeleteConfirmation: $isShowingDeleteConfirmation)
-                            .frame(width: AlbumLayout.editorWidth)
+                            .frame(width: CGFloat(AlbumLayout.clampedEditorWidth(editorWidth)))
                     }
                 } else {
                     ContentUnavailableView(
@@ -369,6 +404,46 @@ private struct PlatformManagementView: View {
         } message: {
             Text("数据库将再次确认该平台没有任何账号数据。")
         }
+    }
+}
+
+private struct ResizableColumnDivider: View {
+    @Binding var width: Double
+    let allowedRange: ClosedRange<Double>
+    let dragDirection: Double
+    let accessibilityName: String
+    @State private var dragStartWidth: Double?
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+        }
+        .frame(width: AlbumLayout.dividerHitWidth)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if dragStartWidth == nil {
+                        dragStartWidth = width
+                    }
+                    let initial = dragStartWidth ?? width
+                    let proposed = initial + Double(value.translation.width) * dragDirection
+                    width = min(max(proposed, allowedRange.lowerBound), allowedRange.upperBound)
+                }
+                .onEnded { _ in
+                    dragStartWidth = nil
+                }
+        )
+        .onHover { isHovering in
+            (isHovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
+        }
+        .help("拖动调整栏宽；缩放窗口时保持此宽度")
+        .accessibilityLabel(accessibilityName)
+        .accessibilityAddTraits(.isButton)
     }
 }
 

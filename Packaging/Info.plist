@@ -21,19 +21,21 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.3.1</string>
+    <string>0.3.2</string>
     <key>CFBundleVersion</key>
-    <string>7</string>
+    <string>8</string>
     <key>LSMinimumSystemVersion</key>
-    <string>26.0</string>
+    <string>15.0</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.photography</string>
     <key>LSMultipleInstancesProhibited</key>
     <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Super-Yael</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSRemovableVolumesUsageDescription</key>
-    <string>个人相册需要读取你选择的 nickname 文件夹来预览其中的图片和视频。</string>
+    <string>个人相册需要读取你选择的 nickname 文件夹以预览媒体，并在你主动操作时新建、重命名文件夹或移入文件。</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

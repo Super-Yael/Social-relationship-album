@@ -1,6 +1,6 @@
 # 个人相册（本机版）
 
-这是只针对当前 Apple M1 Mac 构建的本地个人相册。
+这是针对 Apple Silicon Mac（macOS 15 或更高版本）构建的本地个人相册。
 
 ## 数据原则
 
@@ -48,13 +48,23 @@
 
 ## 构建
 
-构建需要 Xcode 26 或更高版本：脚本会用 `actool` 将 `Packaging/AppIcon.icon` 编译为 macOS 26 的分层图标，并保留 `AppIcon.icns` 作兼容回退。
+构建需要 Xcode 26 或更高版本：脚本会用 `actool` 将 `Packaging/AppIcon.icon` 编译为分层图标，并保留 `AppIcon.icns` 作为较旧系统的兼容回退。默认产物使用 Hardened Runtime 与本机临时签名，仅适合本机使用。
 
 ```sh
 ./Scripts/build_dmg.sh
 ```
 
 产物位于 `dist/个人相册.app` 和 `dist/个人相册-本机版.dmg`。
+
+要在 Mac App Store 之外分发，请使用 Developer ID Application 证书签名并通过 Apple 公证。脚本支持从环境变量读取签名身份和 `notarytool` 钥匙串配置：
+
+```sh
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARYTOOL_PROFILE="personal-album-notary" \
+./Scripts/build_dmg.sh
+```
+
+本机临时签名的 DMG 不等同于已公证发行版。Mac App Store 提交还需要在 App Store Connect 中注册 Bundle ID、提供隐私政策与元数据，并使用 Mac App Distribution 工作流签名上传。
 
 ## 许可证
 

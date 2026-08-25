@@ -685,6 +685,9 @@ private struct MediaBrowserView: View {
                 }
             }
         }
+        // Keep the adaptive grid, thumbnails, and header in one geometry transaction
+        // while NavigationSplitView or the inspector animates its available width.
+        .geometryGroup()
         .onChange(of: model.selectedPersonID) { _, _ in
             selectedMediaID = nil
         }

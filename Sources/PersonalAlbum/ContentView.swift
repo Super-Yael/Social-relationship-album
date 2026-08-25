@@ -156,45 +156,9 @@ private struct AlbumMainView: View {
                     )
             }
             .toolbar {
-                ToolbarItemGroup {
-                    Button {
-                        newFolderName = ""
-                        isShowingCreateFolder = true
-                    } label: {
-                        Label("新建人物文件夹", systemImage: "folder.badge.plus")
-                    }
-                    .help("在 nickname 中新建一个空的人物文件夹")
-
-                    platformFilterMenu
-                    peopleSortMenu
-
-                    Button {
-                        addExistingFolder()
-                    } label: {
-                        Label("添加已有文件夹", systemImage: "plus")
-                    }
-                    .help("只增加数据库记录，不创建文件夹")
-
-                    Button {
-                        model.scanForNewFolders()
-                    } label: {
-                        Label("扫描 nickname", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    .help("立即扫描并只补录尚未进入数据库的一级文件夹")
-
-                    Button {
-                        model.createManualBackup()
-                    } label: {
-                        Label("立即备份数据库", systemImage: "externaldrive.badge.timemachine")
-                    }
-
-                    Button {
-                        isShowingPlatformManagement = true
-                    } label: {
-                        Label("平台管理", systemImage: "rectangle.3.group")
-                    }
-                    .help("新增、重命名或删除空平台")
-
+                ToolbarItemGroup(placement: .secondaryAction) {
+                    addPersonMenu
+                    albumActionsMenu
                     Button {
                         isInspectorPresented.toggle()
                     } label: {
@@ -273,6 +237,8 @@ private struct AlbumMainView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
+                platformFilterMenu
+                peopleSortMenu
                 if model.peopleListOptions.platform != nil {
                     Button {
                         model.setPlatformFilter(nil)
@@ -420,6 +386,57 @@ private struct AlbumMainView: View {
         .accessibilityLabel(
             "人物排序，当前按\(model.peopleListOptions.sortField.title)\(model.peopleListOptions.sortDirection.title)"
         )
+    }
+
+    private var addPersonMenu: some View {
+        Menu {
+            Button {
+                newFolderName = ""
+                isShowingCreateFolder = true
+            } label: {
+                Label("新建人物文件夹…", systemImage: "folder.badge.plus")
+            }
+
+            Button {
+                addExistingFolder()
+            } label: {
+                Label("加入已有文件夹…", systemImage: "folder.badge.plus")
+            }
+        } label: {
+            Label("添加人物", systemImage: "plus")
+                .labelStyle(.iconOnly)
+        }
+        .help("新建或加入人物文件夹")
+        .accessibilityLabel("添加人物")
+    }
+
+    private var albumActionsMenu: some View {
+        Menu {
+            Button {
+                model.scanForNewFolders()
+            } label: {
+                Label("扫描 nickname", systemImage: "arrow.triangle.2.circlepath")
+            }
+
+            Button {
+                model.createManualBackup()
+            } label: {
+                Label("立即备份数据库", systemImage: "externaldrive.badge.timemachine")
+            }
+
+            Divider()
+
+            Button {
+                isShowingPlatformManagement = true
+            } label: {
+                Label("平台管理…", systemImage: "rectangle.3.group")
+            }
+        } label: {
+            Label("更多相册操作", systemImage: "ellipsis.circle")
+                .labelStyle(.iconOnly)
+        }
+        .help("更多相册操作")
+        .accessibilityLabel("更多相册操作")
     }
 
     private var sidebarSummary: String {

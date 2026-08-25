@@ -6,10 +6,17 @@ final class PersonalAlbumTests: XCTestCase {
     func testNativeSplitViewUsesFlexibleCompactWindowMetrics() {
         XCTAssertEqual(AlbumLayout.defaultSidebarWidth, 280)
         XCTAssertEqual(AlbumLayout.defaultEditorWidth, 420)
-        XCTAssertEqual(AlbumLayout.sidebarWidthRange, 220...420)
+        XCTAssertEqual(AlbumLayout.sidebarWidthRange, 240...380)
         XCTAssertEqual(AlbumLayout.editorWidthRange, 340...560)
+        XCTAssertEqual(AlbumLayout.sidebarCollapseWidth, 900)
+        XCTAssertEqual(AlbumLayout.inspectorCollapseWidth, 1_180)
         XCTAssertEqual(AlbumLayout.minimumWindowWidth, 760)
         XCTAssertEqual(AlbumLayout.minimumWindowHeight, 560)
+
+        XCTAssertFalse(AlbumLayout.shouldCollapseSidebar(at: 900))
+        XCTAssertTrue(AlbumLayout.shouldCollapseSidebar(at: 899))
+        XCTAssertFalse(AlbumLayout.shouldCollapseInspector(at: 1_180))
+        XCTAssertTrue(AlbumLayout.shouldCollapseInspector(at: 1_179))
     }
 
     func testPersistentStatePathsStayInsideApplicationDataDirectory() throws {

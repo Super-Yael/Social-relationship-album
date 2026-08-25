@@ -20,10 +20,20 @@ private enum AlbumPanels {
 enum AlbumLayout {
     static let defaultSidebarWidth = 280.0
     static let defaultEditorWidth = 420.0
-    static let sidebarWidthRange = 220.0...420.0
+    static let sidebarWidthRange = 240.0...380.0
     static let editorWidthRange = 340.0...560.0
+    static let sidebarCollapseWidth: CGFloat = 900
+    static let inspectorCollapseWidth: CGFloat = 1_180
     static let minimumWindowWidth: CGFloat = 760
     static let minimumWindowHeight: CGFloat = 560
+
+    static func shouldCollapseSidebar(at windowWidth: CGFloat) -> Bool {
+        windowWidth < sidebarCollapseWidth
+    }
+
+    static func shouldCollapseInspector(at windowWidth: CGFloat) -> Bool {
+        windowWidth < inspectorCollapseWidth
+    }
 }
 
 struct ContentView: View {
@@ -108,152 +118,155 @@ private struct AlbumMainView: View {
     @EnvironmentObject private var model: AlbumViewModel
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var isInspectorPresented = true
+    @State private var sidebarVisibilityBeforeAutomaticCollapse: NavigationSplitViewVisibility?
+    @State private var inspectorVisibilityBeforeAutomaticCollapse: Bool?
     @State private var isShowingDeleteConfirmation = false
     @State private var isShowingCreateFolder = false
     @State private var isShowingPlatformManagement = false
     @State private var newFolderName = ""
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            peopleSidebar
-                .navigationSplitViewColumnWidth(
-                    min: AlbumLayout.sidebarWidthRange.lowerBound,
-                    ideal: AlbumLayout.defaultSidebarWidth,
-                    max: AlbumLayout.sidebarWidthRange.upperBound
-                )
-        } detail: {
-            if model.selectedPerson != nil {
-                MediaBrowserView()
-            } else {
-                ContentUnavailableView(
-                    "没有人物记录",
-                    systemImage: "person.crop.rectangle.stack",
-                    description: Text("扫描 nickname 或添加一个已有文件夹。")
-                )
-            }
-        }
-        .navigationSplitViewStyle(.balanced)
-        .inspector(isPresented: $isInspectorPresented) {
-            PersonEditorView(isShowingDeleteConfirmation: $isShowingDeleteConfirmation)
-                .inspectorColumnWidth(
-                    min: AlbumLayout.editorWidthRange.lowerBound,
-                    ideal: AlbumLayout.defaultEditorWidth,
-                    max: AlbumLayout.editorWidthRange.upperBound
-                )
-        }
-        .toolbar {
-            ToolbarItemGroup {
-                Button {
-                    addExistingFolder()
-                } label: {
-                    Label("添加已有文件夹", systemImage: "plus")
-                }
-                .help("只增加数据库记录，不创建文件夹")
-
-                Button {
-                    model.scanForNewFolders()
-                } label: {
-                    Label("扫描 nickname", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .help("立即扫描并只补录尚未进入数据库的一级文件夹")
-
-                Button {
-                    model.createManualBackup()
-                } label: {
-                    Label("立即备份数据库", systemImage: "externaldrive.badge.timemachine")
-                }
-
-                Button {
-                    isShowingPlatformManagement = true
-                } label: {
-                    Label("平台管理", systemImage: "rectangle.3.group")
-                }
-                .help("新增、重命名或删除空平台")
-
-                Button {
-                    isInspectorPresented.toggle()
-                } label: {
-                    Label(
-                        isInspectorPresented ? "隐藏资料栏" : "显示资料栏",
-                        systemImage: "sidebar.right"
+        GeometryReader { geometry in
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                peopleSidebar
+                    .frame(minWidth: AlbumLayout.sidebarWidthRange.lowerBound)
+                    .navigationSplitViewColumnWidth(
+                        min: AlbumLayout.sidebarWidthRange.lowerBound,
+                        ideal: AlbumLayout.defaultSidebarWidth,
+                        max: AlbumLayout.sidebarWidthRange.upperBound
+                    )
+            } detail: {
+                if model.selectedPerson != nil {
+                    MediaBrowserView()
+                } else {
+                    ContentUnavailableView(
+                        "没有人物记录",
+                        systemImage: "person.crop.rectangle.stack",
+                        description: Text("扫描 nickname 或添加一个已有文件夹。")
                     )
                 }
-                .help(isInspectorPresented ? "隐藏资料栏" : "显示资料栏")
             }
-        }
-        .safeAreaInset(edge: .bottom) {
-            if !model.statusMessage.isEmpty {
-                HStack {
-                    Text(model.statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("备份 \(model.backupCount) 份 · 上限 50 MiB")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+            .navigationSplitViewStyle(.prominentDetail)
+            .inspector(isPresented: $isInspectorPresented) {
+                PersonEditorView(isShowingDeleteConfirmation: $isShowingDeleteConfirmation)
+                    .inspectorColumnWidth(
+                        min: AlbumLayout.editorWidthRange.lowerBound,
+                        ideal: AlbumLayout.defaultEditorWidth,
+                        max: AlbumLayout.editorWidthRange.upperBound
+                    )
+            }
+            .toolbar {
+                ToolbarItemGroup {
+                    Button {
+                        newFolderName = ""
+                        isShowingCreateFolder = true
+                    } label: {
+                        Label("新建人物文件夹", systemImage: "folder.badge.plus")
+                    }
+                    .help("在 nickname 中新建一个空的人物文件夹")
+
+                    platformFilterMenu
+                    peopleSortMenu
+
+                    Button {
+                        addExistingFolder()
+                    } label: {
+                        Label("添加已有文件夹", systemImage: "plus")
+                    }
+                    .help("只增加数据库记录，不创建文件夹")
+
+                    Button {
+                        model.scanForNewFolders()
+                    } label: {
+                        Label("扫描 nickname", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .help("立即扫描并只补录尚未进入数据库的一级文件夹")
+
+                    Button {
+                        model.createManualBackup()
+                    } label: {
+                        Label("立即备份数据库", systemImage: "externaldrive.badge.timemachine")
+                    }
+
+                    Button {
+                        isShowingPlatformManagement = true
+                    } label: {
+                        Label("平台管理", systemImage: "rectangle.3.group")
+                    }
+                    .help("新增、重命名或删除空平台")
+
+                    Button {
+                        isInspectorPresented.toggle()
+                    } label: {
+                        Label(
+                            isInspectorPresented ? "隐藏资料栏" : "显示资料栏",
+                            systemImage: "sidebar.right"
+                        )
+                    }
+                    .help(isInspectorPresented ? "隐藏资料栏" : "显示资料栏")
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(.bar)
             }
-        }
-        .alert("新建人物文件夹", isPresented: $isShowingCreateFolder) {
-            TextField("nickname", text: $newFolderName)
-            Button("新建") {
-                let name = newFolderName
-                newFolderName = ""
-                model.createPersonFolder(named: name)
-            }
-            Button("取消", role: .cancel) {
-                newFolderName = ""
-            }
-        } message: {
-            Text("只会在 nickname 根目录创建一个空文件夹。")
-        }
-        .sheet(isPresented: $isShowingPlatformManagement) {
-            PlatformManagementView()
-                .environmentObject(model)
-        }
-        .onChange(of: model.interfaceAction) { _, action in
-            guard let action else { return }
-            switch action {
-            case .createFolder:
-                newFolderName = ""
-                isShowingCreateFolder = true
-            case .addExistingFolder:
-                addExistingFolder()
-            case .importDatabase:
-                if let url = AlbumPanels.chooseDatabaseSnapshot() {
-                    model.importDatabaseSnapshot(url)
+            .safeAreaInset(edge: .bottom) {
+                if !model.statusMessage.isEmpty {
+                    HStack {
+                        Text(model.statusMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("备份 \(model.backupCount) 份 · 上限 50 MiB")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.bar)
                 }
-            case .managePlatforms:
-                isShowingPlatformManagement = true
             }
-            model.consumeInterfaceAction()
+            .alert("新建人物文件夹", isPresented: $isShowingCreateFolder) {
+                TextField("nickname", text: $newFolderName)
+                Button("新建") {
+                    let name = newFolderName
+                    newFolderName = ""
+                    model.createPersonFolder(named: name)
+                }
+                Button("取消", role: .cancel) {
+                    newFolderName = ""
+                }
+            } message: {
+                Text("只会在 nickname 根目录创建一个空文件夹。")
+            }
+            .sheet(isPresented: $isShowingPlatformManagement) {
+                PlatformManagementView()
+                    .environmentObject(model)
+            }
+            .onAppear {
+                adaptChrome(to: geometry.size.width)
+            }
+            .onChange(of: geometry.size.width) { _, width in
+                adaptChrome(to: width)
+            }
+            .onChange(of: model.interfaceAction) { _, action in
+                guard let action else { return }
+                switch action {
+                case .createFolder:
+                    newFolderName = ""
+                    isShowingCreateFolder = true
+                case .addExistingFolder:
+                    addExistingFolder()
+                case .importDatabase:
+                    if let url = AlbumPanels.chooseDatabaseSnapshot() {
+                        model.importDatabaseSnapshot(url)
+                    }
+                case .managePlatforms:
+                    isShowingPlatformManagement = true
+                }
+                model.consumeInterfaceAction()
+            }
         }
     }
 
     private var peopleSidebar: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Button {
-                    newFolderName = ""
-                    isShowingCreateFolder = true
-                } label: {
-                    Label("新建文件夹", systemImage: "folder.badge.plus")
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("在 nickname 中新建一个空的人物文件夹")
-
-                Spacer(minLength: 8)
-
-                platformFilterMenu
-                peopleSortMenu
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-
             HStack(spacing: 5) {
                 Text(sidebarSummary)
                     .font(.caption)
@@ -273,7 +286,7 @@ private struct AlbumMainView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, 7)
+            .padding(.vertical, 8)
 
             Divider()
 
@@ -324,6 +337,28 @@ private struct AlbumMainView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func adaptChrome(to windowWidth: CGFloat) {
+        if AlbumLayout.shouldCollapseInspector(at: windowWidth) {
+            if inspectorVisibilityBeforeAutomaticCollapse == nil {
+                inspectorVisibilityBeforeAutomaticCollapse = isInspectorPresented
+            }
+            isInspectorPresented = false
+        } else if let previousVisibility = inspectorVisibilityBeforeAutomaticCollapse {
+            isInspectorPresented = previousVisibility
+            inspectorVisibilityBeforeAutomaticCollapse = nil
+        }
+
+        if AlbumLayout.shouldCollapseSidebar(at: windowWidth) {
+            if sidebarVisibilityBeforeAutomaticCollapse == nil {
+                sidebarVisibilityBeforeAutomaticCollapse = columnVisibility
+            }
+            columnVisibility = .detailOnly
+        } else if let previousVisibility = sidebarVisibilityBeforeAutomaticCollapse {
+            columnVisibility = previousVisibility
+            sidebarVisibilityBeforeAutomaticCollapse = nil
+        }
     }
 
     private var platformFilterMenu: some View {

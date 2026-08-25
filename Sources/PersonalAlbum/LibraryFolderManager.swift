@@ -1,5 +1,10 @@
 import Foundation
 
+struct MovedMediaFiles: Equatable, Sendable {
+    let destinations: [URL]
+    let skippedCount: Int
+}
+
 enum LibraryFolderManager {
     static func createPersonFolder(named rawName: String, in libraryURL: URL) throws -> URL {
         let name = try validatedName(rawName)
@@ -52,6 +57,103 @@ enum LibraryFolderManager {
         }
         try FileManager.default.moveItem(at: source, to: destination)
         return destination
+    }
+
+    static func moveMediaFiles(
+        at sourceURLs: [URL],
+        to personFolderURL: URL,
+        in libraryURL: URL
+    ) throws -> MovedMediaFiles {
+        let fileManager = FileManager.default
+        let normalizedRoot = try validatedRoot(libraryURL)
+        let destinationFolder = personFolderURL.standardizedFileURL
+        guard destinationFolder.deletingLastPathComponent() == normalizedRoot else {
+            throw AlbumError.invalidFolder("只能将文件移入 nickname 的直属人物文件夹。")
+        }
+
+        var destinationIsDirectory: ObjCBool = false
+        guard fileManager.fileExists(
+            atPath: destinationFolder.path,
+            isDirectory: &destinationIsDirectory
+        ), destinationIsDirectory.boolValue else {
+            throw AlbumError.invalidFolder("人物文件夹不存在，无法移入文件：\(destinationFolder.path)")
+        }
+
+        var seenSources = Set<String>()
+        var seenDestinations = Set<String>()
+        var plans: [(source: URL, destination: URL)] = []
+        var skippedCount = 0
+
+        for sourceURL in sourceURLs {
+            guard sourceURL.isFileURL else {
+                throw AlbumError.invalidFolder("只能拖入本地文件。")
+            }
+            let source = sourceURL.standardizedFileURL
+            guard seenSources.insert(source.path).inserted else { continue }
+
+            guard fileManager.fileExists(atPath: source.path) else {
+                throw AlbumError.invalidFolder("要移动的文件不存在：\(source.path)")
+            }
+            let sourceValues = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard sourceValues.isRegularFile == true, sourceValues.isSymbolicLink != true else {
+                throw AlbumError.invalidFolder("只支持拖入普通文件：\(source.lastPathComponent)")
+            }
+
+            let destination = destinationFolder
+                .appendingPathComponent(source.lastPathComponent, isDirectory: false)
+                .standardizedFileURL
+            guard destination.deletingLastPathComponent() == destinationFolder else {
+                throw AlbumError.invalidFolder("无法为文件生成安全的目标路径：\(source.lastPathComponent)")
+            }
+            if destination.path == source.path {
+                skippedCount += 1
+                continue
+            }
+
+            let collisionKey = destination.path.lowercased()
+            guard seenDestinations.insert(collisionKey).inserted else {
+                throw AlbumError.invalidFolder(
+                    "多个拖入文件会使用同一目标名称：\(source.lastPathComponent)"
+                )
+            }
+            guard !fileManager.fileExists(atPath: destination.path) else {
+                throw AlbumError.invalidFolder(
+                    "人物文件夹中已存在“\(source.lastPathComponent)”，未覆盖任何文件。"
+                )
+            }
+            plans.append((source, destination))
+        }
+
+        var completedPlans: [(source: URL, destination: URL)] = []
+        do {
+            for plan in plans {
+                // This is a filesystem move. Do not replace it with copy + remove.
+                try fileManager.moveItem(at: plan.source, to: plan.destination)
+                completedPlans.append(plan)
+            }
+        } catch let moveError {
+            var rollbackFailures: [String] = []
+            for plan in completedPlans.reversed() {
+                do {
+                    try fileManager.moveItem(at: plan.destination, to: plan.source)
+                } catch {
+                    rollbackFailures.append("\(plan.destination.path): \(error.localizedDescription)")
+                }
+            }
+            if !rollbackFailures.isEmpty {
+                throw AlbumError.invalidFolder(
+                    "批量移动中断，且部分文件无法恢复原位置。\n" +
+                    "移动错误：\(moveError.localizedDescription)\n" +
+                    "恢复错误：\(rollbackFailures.joined(separator: "\n"))"
+                )
+            }
+            throw moveError
+        }
+
+        return MovedMediaFiles(
+            destinations: plans.map(\.destination),
+            skippedCount: skippedCount
+        )
     }
 
     private static func validatedName(_ rawName: String) throws -> String {

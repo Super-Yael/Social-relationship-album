@@ -18,6 +18,36 @@ struct PlatformRecord: Identifiable, Hashable {
     var accountCount: Int
 }
 
+enum PeopleSortField: String, CaseIterable, Identifiable {
+    case nickname
+    case createdAt
+    case updatedAt
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .nickname: "名称"
+        case .createdAt: "添加日期"
+        case .updatedAt: "修改日期"
+        }
+    }
+}
+
+enum PeopleSortDirection: String, CaseIterable, Identifiable {
+    case ascending
+    case descending
+
+    var id: String { rawValue }
+    var title: String { self == .ascending ? "升序" : "降序" }
+}
+
+struct PeopleListOptions: Equatable {
+    var platform: String?
+    var sortField: PeopleSortField = .nickname
+    var sortDirection: PeopleSortDirection = .ascending
+}
+
 struct PersonRecord: Identifiable, Hashable {
     let id: Int64
     var nickname: String

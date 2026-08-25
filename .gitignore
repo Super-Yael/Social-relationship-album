@@ -3,7 +3,14 @@
 dist/
 DerivedData/
 .DS_Store
+
+# Private album state and Apple Photos libraries
 *.sqlite
 *.sqlite-*
 *.db
+*.db-*
+*.bookmark
+*.photoslibrary/
+个人相册数据库备份/
+
 xcuserdata/

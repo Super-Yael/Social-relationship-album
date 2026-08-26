@@ -3,15 +3,24 @@ import QuickLookThumbnailing
 import QuickLookUI
 import SwiftUI
 
+enum MediaLayout {
+    static func aspectRatio(pixelWidth: Int, pixelHeight: Int) -> CGFloat {
+        guard pixelWidth > 0, pixelHeight > 0 else { return 1 }
+        return CGFloat(pixelWidth) / CGFloat(pixelHeight)
+    }
+}
+
 @MainActor
 private final class ThumbnailLoader: ObservableObject {
     @Published var image: NSImage?
+    @Published var aspectRatio: CGFloat = 1
     private var representedPath = ""
 
     func load(url: URL, size: CGSize) {
         guard representedPath != url.path else { return }
         representedPath = url.path
         image = nil
+        aspectRatio = 1
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         let request = QLThumbnailGenerator.Request(
             fileAt: url,
@@ -21,10 +30,15 @@ private final class ThumbnailLoader: ObservableObject {
         )
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, _ in
             guard let representation else { return }
-            let thumbnail = NSImage(cgImage: representation.cgImage, size: size)
+            let thumbnail = representation.nsImage
+            let thumbnailAspectRatio = MediaLayout.aspectRatio(
+                pixelWidth: representation.cgImage.width,
+                pixelHeight: representation.cgImage.height
+            )
             Task { @MainActor in
                 guard self?.representedPath == url.path else { return }
                 self?.image = thumbnail
+                self?.aspectRatio = thumbnailAspectRatio
             }
         }
     }
@@ -55,7 +69,7 @@ struct MediaThumbnailView: View {
                     .shadow(radius: 3)
             }
         }
-        .aspectRatio(1, contentMode: .fit)
+        .aspectRatio(loader.aspectRatio, contentMode: .fit)
         .task(id: item.url.path) {
             loader.load(url: item.url, size: CGSize(width: 300, height: 300))
         }

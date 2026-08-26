@@ -156,6 +156,9 @@ private struct AlbumMainView: View {
                     )
             }
             .toolbar {
+                if #available(macOS 26.0, *) {
+                    ToolbarSpacer(.flexible, placement: .secondaryAction)
+                }
                 ToolbarItemGroup(placement: .secondaryAction) {
                     addPersonMenu
                     albumActionsMenu

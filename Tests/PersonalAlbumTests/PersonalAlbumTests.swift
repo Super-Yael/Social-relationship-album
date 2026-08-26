@@ -3,6 +3,13 @@ import XCTest
 @testable import PersonalAlbum
 
 final class PersonalAlbumTests: XCTestCase {
+    func testMediaLayoutPreservesThumbnailAspectRatio() {
+        XCTAssertEqual(MediaLayout.aspectRatio(pixelWidth: 4_032, pixelHeight: 3_024), 4.0 / 3.0)
+        XCTAssertEqual(MediaLayout.aspectRatio(pixelWidth: 1_080, pixelHeight: 1_920), 9.0 / 16.0)
+        XCTAssertEqual(MediaLayout.aspectRatio(pixelWidth: 0, pixelHeight: 1_920), 1)
+        XCTAssertEqual(MediaLayout.aspectRatio(pixelWidth: 1_080, pixelHeight: 0), 1)
+    }
+
     func testNativeSplitViewUsesFlexibleCompactWindowMetrics() {
         XCTAssertEqual(AlbumLayout.defaultSidebarWidth, 280)
         XCTAssertEqual(AlbumLayout.defaultEditorWidth, 420)

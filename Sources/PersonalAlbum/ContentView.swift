@@ -157,20 +157,18 @@ private struct AlbumMainView: View {
             }
             .toolbar {
                 if #available(macOS 26.0, *) {
-                    ToolbarSpacer(.flexible, placement: .secondaryAction)
-                }
-                ToolbarItemGroup(placement: .secondaryAction) {
-                    addPersonMenu
-                    albumActionsMenu
-                    Button {
-                        isInspectorPresented.toggle()
-                    } label: {
-                        Label(
-                            isInspectorPresented ? "隐藏资料栏" : "显示资料栏",
-                            systemImage: "sidebar.right"
-                        )
+                    ToolbarSpacer(.flexible)
+                    ToolbarItemGroup {
+                        addPersonMenu
+                        albumActionsMenu
+                        inspectorToggleButton
                     }
-                    .help(isInspectorPresented ? "隐藏资料栏" : "显示资料栏")
+                } else {
+                    ToolbarItemGroup(placement: .secondaryAction) {
+                        addPersonMenu
+                        albumActionsMenu
+                        inspectorToggleButton
+                    }
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -413,6 +411,18 @@ private struct AlbumMainView: View {
         .accessibilityLabel("添加人物")
     }
 
+    private var inspectorToggleButton: some View {
+        Button {
+            isInspectorPresented.toggle()
+        } label: {
+            Label(
+                isInspectorPresented ? "隐藏资料栏" : "显示资料栏",
+                systemImage: "sidebar.right"
+            )
+        }
+        .help(isInspectorPresented ? "隐藏资料栏" : "显示资料栏")
+    }
+
     private var albumActionsMenu: some View {
         Menu {
             Button {
@@ -648,6 +658,9 @@ private struct MediaBrowserView: View {
                         LazyVGrid(columns: columns, spacing: 16) {
                             ForEach(model.mediaItems) { item in
                                 MediaGridCell(item: item, isSelected: selectedMediaID == item.id)
+                                // Animate each card as one geometric unit while a system
+                                // sidebar or inspector changes the grid's available width.
+                                .geometryGroup()
                                 .onTapGesture(count: 2) {
                                     selectedMediaID = item.id
                                     previewItem = item
@@ -705,9 +718,6 @@ private struct MediaBrowserView: View {
                 }
             }
         }
-        // Keep the adaptive grid, thumbnails, and header in one geometry transaction
-        // while NavigationSplitView or the inspector animates its available width.
-        .geometryGroup()
         .onChange(of: model.selectedPersonID) { _, _ in
             selectedMediaID = nil
         }

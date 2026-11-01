@@ -114,7 +114,12 @@ struct MediaPreviewSheet: View {
             }
             .padding(12)
             Divider()
-            QuickLookContainer(url: item.url)
+            if item.kind == .image {
+                ImageTextPreview(url: item.url)
+                    .id(item.id)
+            } else {
+                QuickLookContainer(url: item.url)
+            }
         }
         .frame(minWidth: 900, minHeight: 650)
     }

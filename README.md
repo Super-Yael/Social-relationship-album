@@ -2,6 +2,12 @@
 
 这是针对 Apple Silicon Mac（macOS 15 或更高版本）构建的本地个人相册。
 
+## 界面预览
+
+左侧浏览和筛选人物，中间预览照片与视频，右侧管理人物资料和平台账号。
+
+![个人相册主界面：人物列表、媒体预览和资料字段](docs/images/personal-album-interface.png)
+
 ## 数据原则
 
 - `nickname` 及其一级子文件夹是唯一媒体文件夹规范。
@@ -22,11 +28,22 @@
 - 工具栏中的主要操作同时出现在菜单栏中，并提供常用键盘快捷键。
 - 人物侧边栏可按“某个平台存在非空记录”筛选，并按名称、添加日期或修改日期升降序排列；选择会保存在 App 容器内的 SQLite 设置中。
 - 媒体支持单击选择、方向键移动，以及空格或 Return 预览。
+- 图片预览静默使用 macOS 原生实况文本识别文字，可直接选中文字复制，不显示额外的 OCR 提示栏或按钮。
 - 预览区支持同时拖入一个或多个本地文件；App 在后台使用文件系统移动将它们放入当前人物文件夹，完成后自动刷新。若目标存在同名文件，整批移动会在写入前拒绝，不会覆盖。
 - Finder 旧备注在导入时分类进入五个平台，App 不再保留或显示原 Finder 备注字段。
 - 删除人物表示删除 SQLite 记录，不会删除文件夹。
 - 新增或修正路径时，只接受 `nickname` 的直属子文件夹。
 - App 禁止同时运行多个实例，避免并发编辑同一数据库。
+
+## 图片文字识别（OCR）
+
+打开图片预览后自动在后台识别文字，识别完成后可直接在图片上选中文字，通过系统菜单复制。OCR 不显示状态提示、完成提示或额外按钮。视频继续使用 Quick Look。
+
+实现依据 Apple 官方 [Enabling Live Text interactions with images](https://developer.apple.com/documentation/visionkit/enabling-live-text-interactions-with-images)：使用共享 `ImageAnalyzer`、`.text` 分析类型及 `ImageAnalysisOverlayView`，通过 `trackingImageView` 跟随 `NSImageView` 的缩放和对齐。先检查 `ImageAnalyzer.isSupported`，语言采用系统偏好。识别结果仅保留在预览内存中，不写入数据库。
+
+图片使用 ImageIO 在后台解码，应用 EXIF 方向后，显示与识别使用同一份像素。为控制内存，最长边限制为 4096 像素；超大图上的细小文字可能受此限制影响。不支持实况文本的设备仍可查看图片；解码失败时保留 Quick Look 预览入口。关闭预览会取消任务，过期结果不会更新界面。
+
+验证命令：`swift test`。OCR 集成测试使用程序生成的图片，不读取个人媒体；在不支持实况文本的设备上该项测试会跳过。
 
 ## 默认位置
 
@@ -55,7 +72,7 @@
 ./Scripts/build_dmg.sh
 ```
 
-产物位于 `dist/个人相册.app` 和 `dist/个人相册-本机版.dmg`。
+产物位于 `dist/个人相册.app` 和 `dist/PersonalAlbum-<版本号>-Apple-Silicon.dmg`。安装包版本号自动读取 `Packaging/Info.plist` 的 `CFBundleShortVersionString`；发布新版时同步递增该版本号和 `CFBundleVersion`，保留其他版本的安装包。当前版本为 `0.3.9`（构建 `15`），图片原生 OCR 静默运行。
 
 要在 Mac App Store 之外分发，请使用 Developer ID Application 证书签名并通过 Apple 公证。脚本支持从环境变量读取签名身份和 `notarytool` 钥匙串配置：
 

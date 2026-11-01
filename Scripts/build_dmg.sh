@@ -5,8 +5,13 @@ SCRIPT_DIR=${0:A:h}
 PROJECT_DIR=${SCRIPT_DIR:h}
 DIST_DIR="$PROJECT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/个人相册.app"
-DMG_PATH="$DIST_DIR/个人相册-本机版.dmg"
 INFO_PLIST="$PROJECT_DIR/Packaging/Info.plist"
+APP_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")
+if [[ ! "$APP_VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]]; then
+    print -u2 "无效的 App 版本号：$APP_VERSION"
+    exit 1
+fi
+DMG_PATH="$DIST_DIR/PersonalAlbum-${APP_VERSION}-Apple-Silicon.dmg"
 ENTITLEMENTS="$PROJECT_DIR/Packaging/PersonalAlbum.entitlements"
 PRIVACY_MANIFEST="$PROJECT_DIR/Packaging/PrivacyInfo.xcprivacy"
 LEGACY_APP_ICON="$PROJECT_DIR/Packaging/AppIcon.icns"
